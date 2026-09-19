@@ -1,0 +1,102 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Geist', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Bricolage Grotesque', 'Geist', ui-sans-serif, sans-serif;
+
+  /* Paper side of the app */
+  --color-cream: #fffaf2;
+  --color-sand: #f3e9d8;
+  --color-sand-deep: #f0e5d2;
+  --color-sand-deeper: #e9dac2;
+  --color-track: #d6d1c8;
+
+  /* Ink */
+  --color-ink: #171412;
+  --color-ink-soft: #44423e;
+  --color-muted: #6b6862;
+
+  /* Accents */
+  --color-violet: #6c4bff;
+  --color-violet-deep: #5638e6;
+  --color-lime: #d9f27a;
+  --color-danger: #b4321f;
+
+  /* Editor side of the app */
+  --color-night: #1b1527;
+  --color-night-panel: #231b33;
+  --color-night-lilac: #c9baff;
+
+  --shadow-stamp: 2px 2px 0 #171412;
+  --shadow-stamp-lg: 6px 6px 0 rgba(23, 20, 18, 0.12);
+  --shadow-card: 3px 3px 0 rgba(23, 20, 18, 0.09);
+  --shadow-toast: 0 6px 24px rgba(0, 0, 0, 0.22);
+
+  --animate-rise: rise 0.25s ease both;
+
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+/* Placeholder media. Real thumbnails replace these once a job renders. */
+@utility hatch-night {
+  background: repeating-linear-gradient(135deg, #2c2440 0 6px, #332a49 6px 12px);
+}
+@utility hatch-night-lg {
+  background: repeating-linear-gradient(135deg, #2c2440 0 7px, #332a49 7px 14px);
+}
+@utility hatch-sand {
+  background: repeating-linear-gradient(135deg, #f0e5d2 0 6px, #f8f0e3 6px 12px);
+}
+@utility hatch-clip {
+  background: repeating-linear-gradient(135deg, #eee3ce 0 6px, #f7efe1 6px 12px);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    overflow: hidden;
+    background: var(--color-cream);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a {
+    color: var(--color-violet);
+    text-decoration: none;
+  }
+  a:hover {
+    color: var(--color-violet-deep);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-violet);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
