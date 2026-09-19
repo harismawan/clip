@@ -1,0 +1,61 @@
+name: Deploy to Production
+
+# THIS WORKFLOW RUNS ON A SELF-HOSTED RUNNER ON THE PRODUCTION BOX, so the
+# trigger list below is a security boundary, not a convenience. A self-hosted
+# runner executes whatever a workflow tells it to, on the machine serving real
+# traffic — and that machine also serves other applications.
+#
+# `push` to main and a manual dispatch are both safe because a stranger can
+# cause neither: a fork's pull request cannot push to main.
+#
+# NEVER ADD A `pull_request` TRIGGER HERE. That would let anyone who opens a
+# pull request run arbitrary code on the production server. Tests on pull
+# requests belong in a separate workflow on a GitHub-hosted runner.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time, and a queued one WAITS rather than replacing the one in
+# flight. `cancel-in-progress: false` is deliberate: cancelling midway could
+# leave pm2 restarted against a half-copied web bundle, or the database migrated
+# for code that never finished deploying.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    timeout-minutes: 30
+
+    # The job reads nothing from the GitHub API. Declared anyway so the token's
+    # scope is explicit rather than inherited from a repository default.
+    permissions:
+      contents: read
+
+    steps:
+      # Deliberately NO actions/checkout.
+      #
+      # The deployment IS the clone that already lives on this box: it holds
+      # backend/.env, ws/.env and infra/.env, which are gitignored and exist
+      # nowhere else. A checkout would create a SECOND clone in the runner's
+      # workspace that has no secrets, builds fine, and deploys nothing.
+      #
+      # Deliberately NO `git pull` step either. scripts/deploy.sh --pull does it,
+      # and refuses a dirty tree or a clone holding commits that are not on
+      # origin/main. Pulling here would run before those guards and defeat them.
+      - name: Deploy
+        run: bash /home/wildandev/repo/clip/scripts/deploy.sh --pull
+
+      # deploy.sh already fails the job if its own health checks fail; this is
+      # the one-line summary that shows in the run without opening the log.
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Deploy: ${{ job.status }}"
+            echo ""
+            echo "- commit: \`${{ github.sha }}\`"
+            echo "- site: https://clip.mhamzah.id"
+          } >> "$GITHUB_STEP_SUMMARY"

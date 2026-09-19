@@ -1,27 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
-import {
-  ALT_TITLES,
-  CLIPS,
-  FREE_VIDEO_ALLOWANCE,
-  LENGTHS,
-  RATIOS,
-  SOURCES,
-  TIMELINE_LEAD_IN,
-  TIMELINE_SPAN,
-} from '../data/fixtures'
+import { LENGTHS, RATIOS, SAMPLE_URLS, TIMELINE_LEAD_IN, TIMELINE_SPAN } from '../data/fixtures'
 import { loadPersisted, savePersisted } from '../lib/persist'
-import type { Clip, Project, Ratio, Screen, SourceKey } from '../types'
+import { api, ApiError } from '../lib/api'
+import type { JobSnapshot } from '../lib/api'
+import type { Clip, JobStatus, Project, Ratio, Screen, Source, SourceKey } from '../types'
 
 /** Smallest trim window, as a percentage of the visible timeline. */
 const MIN_TRIM_SPAN = 4
 
 const DEFAULT_TRIM = { trimIn: 22, trimOut: 54, playhead: 34 }
 
+/** Job states where the processing screen should keep waiting. */
+const ACTIVE: readonly JobStatus[] = [
+  'pending',
+  'downloading',
+  'transcribing',
+  'analyzing',
+  'rendering',
+]
+
 export interface SnipState {
   screen: Screen
   url: string
-  source: SourceKey
+  /** The resolved source, once a URL has been analysed. */
+  source: Source | null
   count: number
   lengthIdx: number
   formats: Record<Ratio, boolean>
@@ -29,21 +32,27 @@ export interface SnipState {
   emailMe: boolean
   progress: number
   jobDone: boolean
+  /** Server-reported stage text, e.g. "Rendering 3 of 12". */
+  stage: string | null
+  jobStatus: JobStatus | null
+  jobError: string | null
+  /** True while an API call the user is waiting on is in flight. */
+  busy: boolean
   videosUsed: number
-  /** Finished jobs, newest first. */
+  /** Finished jobs, newest first. Loaded from the server. */
   projects: Project[]
   /** Identifies the run in flight, so a regenerate replaces its project. */
   jobId: string
   clips: Clip[]
   filter: Ratio
   sortByScore: boolean
-  editing: number | null
+  editing: string | null
   trimIn: number
   trimOut: number
   ratio: string
   playing: boolean
   playhead: number
-  regenerating: Record<number, boolean>
+  regenerating: Record<string, boolean>
   toast: string | null
   captionIdx: number
   pwCurrent: string
@@ -53,7 +62,7 @@ export interface SnipState {
 const initialState: SnipState = {
   screen: 'login',
   url: '',
-  source: 'stream',
+  source: null,
   count: 12,
   lengthIdx: 1,
   formats: { '9:16': true, '1:1': true, '4:5': false },
@@ -61,7 +70,11 @@ const initialState: SnipState = {
   emailMe: true,
   progress: 0,
   jobDone: false,
-  videosUsed: 1,
+  stage: null,
+  jobStatus: null,
+  jobError: null,
+  busy: false,
+  videosUsed: 0,
   projects: [],
   jobId: '',
   clips: [],
@@ -78,25 +91,9 @@ const initialState: SnipState = {
   pwNext: '',
 }
 
-function makeClips(n: number): Clip[] {
-  return CLIPS.slice(0, n).map((c, i) => ({ ...c, id: i, selected: i < 2 }))
-}
-
 /** The format tab results should open on: the first one the job rendered. */
 export function firstEnabled(formats: Record<Ratio, boolean>): Ratio {
   return RATIOS.find((r) => formats[r]) ?? RATIOS[0]
-}
-
-/** Record a finished job, replacing the earlier run if this was a regenerate. */
-export function saveProject(s: SnipState): Project[] {
-  const project: Project = {
-    id: s.jobId,
-    title: SOURCES[s.source].title,
-    source: s.source,
-    clips: s.clips,
-    createdAt: Date.now(),
-  }
-  return [project, ...s.projects.filter((p) => p.id !== project.id)]
 }
 
 /** The one place the trim window's bounds are enforced. */
@@ -114,24 +111,57 @@ export function windowFor(clip: { s: number }) {
   return { start: Math.max(0, clip.s - TIMELINE_LEAD_IN), span: TIMELINE_SPAN }
 }
 
-/** Reopen where we left off, with the last job's clips back in hand. */
+/**
+ * Merge a server job snapshot into local state.
+ *
+ * Selection is UI state the server knows nothing about, so it is preserved
+ * across refreshes rather than reset every time the job is re-fetched.
+ */
+export function mergeJob(s: SnipState, job: JobSnapshot): SnipState {
+  const wasSelected = new Set(s.clips.filter((c) => c.selected).map((c) => c.id))
+  const firstLoad = s.clips.length === 0
+
+  return {
+    ...s,
+    jobId: job.id,
+    source: job.source,
+    count: job.clipCount,
+    lengthIdx: job.lengthIdx,
+    formats: { ...s.formats, ...job.formats },
+    subs: job.subs,
+    progress: job.progress,
+    stage: job.stage,
+    jobStatus: job.status,
+    jobError: job.error,
+    jobDone: job.status === 'completed',
+    filter: firstEnabled(job.formats),
+    clips: job.clips.map((c) => ({
+      ...c,
+      // Default the first two ticked, matching the prototype, but only before
+      // the user has made a choice.
+      selected: firstLoad ? c.idx < 2 : wasSelected.has(c.id),
+    })),
+  }
+}
+
+/** Reopen where we left off. Clips are re-fetched, never restored from storage. */
 export function restored(): Partial<SnipState> {
   const slice = loadPersisted()
   // The editor needs one clip in particular; come back to the grid instead.
   if (slice.screen === 'editor') slice.screen = 'results'
-  const project = slice.projects?.find((p) => p.id === slice.jobId)
-  if (project) return { ...slice, clips: project.clips, source: project.source }
-  // Without its clips the results grid would come back empty.
-  return slice.screen === 'results' ? { ...slice, screen: 'new' } : slice
+  // Without a job to re-fetch, the clip screens would come back empty.
+  if ((slice.screen === 'results' || slice.screen === 'processing') && !slice.jobId) {
+    slice.screen = 'new'
+  }
+  return slice
 }
 
 export function useSnipline() {
   const [state, setState] = useState<SnipState>(() => ({ ...initialState, ...restored() }))
 
-  const jobTimer = useRef<number | null>(null)
   const playTimer = useRef<number | null>(null)
   const toastTimer = useRef<number | null>(null)
-  const redoTimers = useRef<number[]>([])
+  const unsubscribe = useRef<(() => void) | null>(null)
   const trackRef = useRef<HTMLDivElement | null>(null)
 
   const patch = useCallback((next: Partial<SnipState>) => {
@@ -140,20 +170,18 @@ export function useSnipline() {
 
   useEffect(
     () => () => {
-      if (jobTimer.current) clearInterval(jobTimer.current)
       if (playTimer.current) clearInterval(playTimer.current)
       if (toastTimer.current) clearTimeout(toastTimer.current)
-      redoTimers.current.forEach(clearTimeout)
+      unsubscribe.current?.()
     },
     [],
   )
 
-  // Only the durable fields are listed, so playback ticks don't hit storage.
+  // Only durable preferences are stored. Clips and progress come from the
+  // server now, so persisting them would just let them go stale.
   useEffect(() => {
     savePersisted({
-      projects: state.projects,
       jobId: state.jobId,
-      videosUsed: state.videosUsed,
       count: state.count,
       lengthIdx: state.lengthIdx,
       formats: state.formats,
@@ -162,9 +190,7 @@ export function useSnipline() {
       screen: state.screen,
     })
   }, [
-    state.projects,
     state.jobId,
-    state.videosUsed,
     state.count,
     state.lengthIdx,
     state.formats,
@@ -176,8 +202,17 @@ export function useSnipline() {
   const say = useCallback((toast: string) => {
     if (toastTimer.current) clearTimeout(toastTimer.current)
     setState((s) => ({ ...s, toast }))
-    toastTimer.current = window.setTimeout(() => setState((s) => ({ ...s, toast: null })), 2200)
+    toastTimer.current = window.setTimeout(() => setState((s) => ({ ...s, toast: null })), 2600)
   }, [])
+
+  const fail = useCallback(
+    (e: unknown) => {
+      const message = e instanceof ApiError ? e.message : 'Something went wrong.'
+      setState((s) => ({ ...s, busy: false }))
+      say(message)
+    },
+    [say],
+  )
 
   const stopPlayback = useCallback(() => {
     if (playTimer.current) clearInterval(playTimer.current)
@@ -188,56 +223,168 @@ export function useSnipline() {
 
   // ---- job lifecycle ------------------------------------------------------
 
-  const runJob = useCallback((jobId: string) => {
-    if (jobTimer.current) clearInterval(jobTimer.current)
-    setState((s) => ({
-      ...s,
-      screen: 'processing',
-      progress: 0,
-      jobDone: false,
-      jobId,
-      filter: firstEnabled(s.formats),
-      clips: makeClips(s.count),
-    }))
-    jobTimer.current = window.setInterval(() => {
-      setState((s) => {
-        const progress = Math.min(100, s.progress + 2.5)
-        if (progress >= 100) {
-          if (jobTimer.current) clearInterval(jobTimer.current)
-          jobTimer.current = null
-          return { ...s, progress: 100, jobDone: true, projects: saveProject(s) }
-        }
-        return { ...s, progress }
-      })
-    }, 180)
+  const refreshJob = useCallback(
+    async (jobId: string) => {
+      try {
+        const job = await api.getJob(jobId)
+        setState((s) => mergeJob(s, job))
+        return job
+      } catch (e) {
+        fail(e)
+        return null
+      }
+    },
+    [fail],
+  )
+
+  const loadProjects = useCallback(async () => {
+    try {
+      patch({ projects: await api.projects() })
+    } catch {
+      // The projects list is secondary; a failure here should not shout.
+    }
+  }, [patch])
+
+  /**
+   * Follow a job to completion over SSE.
+   *
+   * The final clip list is fetched once on the terminal event rather than
+   * streamed, because progress frames are tiny and a full job snapshot is not.
+   */
+  const watchJob = useCallback(
+    (jobId: string) => {
+      unsubscribe.current?.()
+      unsubscribe.current = api.subscribe(
+        jobId,
+        (e) => {
+          setState((s) => ({
+            ...s,
+            progress: e.progress,
+            stage: e.stage,
+            jobStatus: e.status,
+            jobError: e.error,
+          }))
+
+          if (e.status === 'completed') {
+            unsubscribe.current?.()
+            unsubscribe.current = null
+            void refreshJob(jobId).then(() => {
+              setState((s) => ({ ...s, jobDone: true, screen: 'results' }))
+              void loadProjects()
+            })
+          } else if (e.status === 'failed' || e.status === 'cancelled') {
+            unsubscribe.current?.()
+            unsubscribe.current = null
+            setState((s) => ({ ...s, screen: e.status === 'failed' ? 'processing' : 'new' }))
+            if (e.status === 'failed') say(e.error ?? 'That job failed.')
+          }
+        },
+        () => {
+          // The stream dropped (proxy timeout, server restart). Fall back to a
+          // single fetch so the UI cannot sit on a stale bar forever.
+          void refreshJob(jobId)
+        },
+      )
+    },
+    [refreshJob, loadProjects, say],
+  )
+
+  // Resume watching after a reload: the job kept running server-side.
+  useEffect(() => {
+    if (!state.jobId) return
+    if (state.screen !== 'processing' && state.screen !== 'results') return
+
+    void refreshJob(state.jobId).then((job) => {
+      if (job && ACTIVE.includes(job.status)) {
+        patch({ screen: 'processing' })
+        watchJob(job.id)
+      }
+    })
+    // Deliberately runs once on mount: later transitions are driven explicitly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const startJob = useCallback(() => {
+  useEffect(() => {
+    void loadProjects()
+  }, [loadProjects])
+
+  const startJob = useCallback(async () => {
     if (!RATIOS.some((r) => state.formats[r])) {
       say('Pick at least one format to render.')
       return
     }
-    setState((s) => ({ ...s, videosUsed: Math.min(FREE_VIDEO_ALLOWANCE, s.videosUsed + 1) }))
-    runJob(crypto.randomUUID())
-  }, [runJob, say, state.formats])
+    if (!state.source) {
+      say('Paste a link first.')
+      return
+    }
 
-  const cancelJob = useCallback(() => {
-    if (jobTimer.current) clearInterval(jobTimer.current)
-    jobTimer.current = null
+    patch({ busy: true })
+    try {
+      const { jobId } = await api.createJob({
+        videoId: state.source.videoId,
+        count: state.count,
+        lengthIdx: state.lengthIdx,
+        formats: state.formats,
+        subs: state.subs,
+      })
+      setState((s) => ({
+        ...s,
+        busy: false,
+        screen: 'processing',
+        jobId,
+        progress: 0,
+        stage: 'Queued',
+        jobStatus: 'pending',
+        jobError: null,
+        jobDone: false,
+        clips: [],
+        filter: firstEnabled(s.formats),
+        videosUsed: s.videosUsed + 1,
+      }))
+      watchJob(jobId)
+    } catch (e) {
+      fail(e)
+    }
+  }, [patch, say, fail, watchJob, state.formats, state.source, state.count, state.lengthIdx, state.subs])
+
+  const cancelJob = useCallback(async () => {
+    unsubscribe.current?.()
+    unsubscribe.current = null
+    const id = state.jobId
     setState((s) => ({
       ...s,
       screen: 'new',
       progress: 0,
       jobDone: false,
+      jobStatus: null,
       videosUsed: Math.max(0, s.videosUsed - 1),
     }))
-    say('Job cancelled. Free video refunded.')
-  }, [say])
+    if (id) await api.cancelJob(id).catch(() => {})
+    say('Job cancelled.')
+  }, [say, state.jobId])
 
-  const regenerateAll = useCallback(() => {
-    say('Regenerating all clips…')
-    runJob(state.jobId || crypto.randomUUID())
-  }, [runJob, say, state.jobId])
+  const regenerateAll = useCallback(async () => {
+    if (!state.jobId) return
+    patch({ busy: true })
+    try {
+      await api.regenerate(state.jobId)
+      setState((s) => ({
+        ...s,
+        busy: false,
+        screen: 'processing',
+        progress: 0,
+        stage: 'Queued',
+        jobStatus: 'pending',
+        jobError: null,
+        jobDone: false,
+        clips: [],
+      }))
+      watchJob(state.jobId)
+      say('Regenerating all clips…')
+    } catch (e) {
+      fail(e)
+    }
+  }, [patch, say, fail, watchJob, state.jobId])
 
   // ---- navigation ---------------------------------------------------------
 
@@ -248,48 +395,44 @@ export function useSnipline() {
 
   const signIn = useCallback(() => go('new'), [go])
 
-  const signOut = useCallback(
-    () => patch({ screen: 'login', clips: [], progress: 0, jobDone: false }),
-    [patch],
-  )
+  const signOut = useCallback(() => {
+    unsubscribe.current?.()
+    unsubscribe.current = null
+    patch({ screen: 'login', clips: [], progress: 0, jobDone: false, jobId: '' })
+  }, [patch])
 
-  const goNew = useCallback(() => patch({ screen: 'new', url: '' }), [patch])
+  const goNew = useCallback(() => patch({ screen: 'new', url: '', source: null }), [patch])
 
-  /** Reopen a past project with the clips it finished with. */
+  /** Reopen a past project, re-fetching its clips. */
   const openProject = useCallback(
-    (id: string) =>
-      setState((s) => {
-        const p = s.projects.find((x) => x.id === id)
-        if (!p) return s
-        return { ...s, source: p.source, clips: p.clips, jobId: p.id, screen: 'results' }
-      }),
-    [],
+    async (id: string) => {
+      patch({ busy: true })
+      const job = await refreshJob(id)
+      if (job) setState((s) => ({ ...s, busy: false, screen: 'results' }))
+      else patch({ busy: false })
+    },
+    [patch, refreshJob],
   )
 
   // ---- source picking -----------------------------------------------------
 
   const setUrl = useCallback((url: string) => patch({ url }), [patch])
 
-  const analyze = useCallback(() => {
+  const analyze = useCallback(async () => {
     if (!state.url.trim()) {
       say('Paste a link first, or try a sample.')
       return
     }
-    patch({ source: /youtu/.test(state.url) ? 'podcast' : 'stream', screen: 'setup' })
-  }, [patch, say, state.url])
+    patch({ busy: true })
+    try {
+      const source = await api.analyze(state.url.trim())
+      patch({ source, busy: false, screen: 'setup' })
+    } catch (e) {
+      fail(e)
+    }
+  }, [patch, say, fail, state.url])
 
-  const loadSample = useCallback(
-    (source: SourceKey) =>
-      patch({
-        url:
-          source === 'podcast'
-            ? 'https://youtube.com/watch?v=sample-podcast'
-            : 'https://twitch.tv/videos/1904457221',
-        source,
-        screen: 'setup',
-      }),
-    [patch],
-  )
+  const loadSample = useCallback((source: SourceKey) => patch({ url: SAMPLE_URLS[source] }), [patch])
 
   // ---- job settings -------------------------------------------------------
 
@@ -313,7 +456,7 @@ export function useSnipline() {
   const toggleSort = useCallback(() => setState((s) => ({ ...s, sortByScore: !s.sortByScore })), [])
 
   const toggleClip = useCallback(
-    (id: number) =>
+    (id: string) =>
       setState((s) => ({
         ...s,
         clips: s.clips.map((c) => (c.id === id ? { ...c, selected: !c.selected } : c)),
@@ -330,43 +473,74 @@ export function useSnipline() {
     [],
   )
 
-  const download = useCallback(() => {
-    const n = state.clips.filter((c) => c.selected).length
-    if (!n) {
+  const download = useCallback(async () => {
+    const picked = state.clips.filter((c) => c.selected)
+    if (!picked.length) {
       say('Pick a clip first.')
       return
     }
-    say(n === 1 ? 'Saved 1 clip to your device.' : `Saved ${n} clips as a zip.`)
-  }, [say, state.clips])
 
+    const ready = picked.filter((c) => c.renders[state.filter]?.status === 'ready')
+    if (!ready.length) {
+      say(`No ${state.filter} clips are ready yet.`)
+      return
+    }
+
+    say(ready.length === 1 ? 'Downloading…' : `Zipping ${ready.length} clips…`)
+    try {
+      await api.download(
+        ready.map((c) => c.id),
+        state.filter,
+        ready[0].renders[state.filter]?.url ?? null,
+      )
+    } catch (e) {
+      fail(e)
+    }
+  }, [say, fail, state.clips, state.filter])
+
+  /**
+   * Re-cut one clip. The server re-renders it, so this polls that clip until
+   * its status settles rather than guessing at a duration.
+   */
   const redoClip = useCallback(
-    (id: number) => {
+    async (id: string) => {
       setState((s) => ({ ...s, regenerating: { ...s.regenerating, [id]: true } }))
-      const timer = window.setTimeout(() => {
-        setState((s) => ({
-          ...s,
-          regenerating: { ...s.regenerating, [id]: false },
-          clips: s.clips.map((c) =>
-            c.id === id
-              ? {
-                  ...c,
-                  title: ALT_TITLES[id % ALT_TITLES.length],
-                  sc: Math.max(35, Math.min(97, c.sc + 5)),
-                }
-              : c,
-          ),
-        }))
-      }, 1300)
-      redoTimers.current.push(timer)
       say('Recutting that moment…')
+
+      try {
+        await api.redoClip(id)
+      } catch (e) {
+        setState((s) => ({ ...s, regenerating: { ...s.regenerating, [id]: false } }))
+        fail(e)
+        return
+      }
+
+      const jobId = state.jobId
+      const deadline = Date.now() + 10 * 60_000
+      const poll = async () => {
+        if (Date.now() > deadline) {
+          setState((s) => ({ ...s, regenerating: { ...s.regenerating, [id]: false } }))
+          say('That re-cut is taking unusually long; refresh to check.')
+          return
+        }
+        const job = await api.getJob(jobId).catch(() => null)
+        const clip = job?.clips.find((c) => c.id === id)
+        if (clip && clip.status !== 'pending' && clip.status !== 'rendering') {
+          setState((s) => mergeJob({ ...s, regenerating: { ...s.regenerating, [id]: false } }, job!))
+          say(clip.status === 'ready' ? 'Clip recut.' : 'That re-cut failed.')
+          return
+        }
+        window.setTimeout(() => void poll(), 3000)
+      }
+      window.setTimeout(() => void poll(), 3000)
     },
-    [say],
+    [say, fail, state.jobId],
   )
 
   // ---- editor -------------------------------------------------------------
 
   const openEditor = useCallback(
-    (id: number) =>
+    (id: string) =>
       patch({ screen: 'editor', editing: id, ...DEFAULT_TRIM, ratio: '9/16', captionIdx: 0 }),
     [patch],
   )
@@ -413,7 +587,7 @@ export function useSnipline() {
 
   const rewriteCaption = useCallback(() => {
     setState((s) => ({ ...s, captionIdx: s.captionIdx ? 0 : 1 }))
-    say('Caption rewritten.')
+    say('Caption rewritten. (Prototype — not saved.)')
   }, [say])
 
   const togglePlay = useCallback(() => {
@@ -445,7 +619,7 @@ export function useSnipline() {
   const saveAndDownload = useCallback(() => {
     stopPlayback()
     patch({ screen: 'results', playing: false })
-    say('Clip saved and downloaded.')
+    say('Editor edits are not saved yet — download from the grid.')
   }, [patch, say, stopPlayback])
 
   // ---- settings -----------------------------------------------------------
@@ -463,7 +637,7 @@ export function useSnipline() {
       return
     }
     patch({ pwCurrent: '', pwNext: '' })
-    say('Password updated.')
+    say('Accounts are not implemented yet.')
   }, [patch, say, state.pwCurrent, state.pwNext])
 
   return {

@@ -1,13 +1,28 @@
 import { Button } from '../components/Button'
 import { OptionChip } from '../components/OptionChip'
 import { Toggle } from '../components/Toggle'
-import { CLIP_COUNTS, COUNT_HINTS, LENGTHS, RATIOS, SOURCES } from '../data/fixtures'
+import { CLIP_COUNTS, COUNT_HINTS, LENGTHS, RATIOS } from '../data/fixtures'
 import { cn } from '../lib/cn'
 import { useApp } from '../state/AppContext'
 
 export function SetupScreen() {
-  const { state, setCount, setLengthIdx, toggleFormat, toggleSubs, startJob } = useApp()
-  const src = SOURCES[state.source]
+  const { state, setCount, setLengthIdx, toggleFormat, toggleSubs, startJob, goNew } = useApp()
+  const src = state.source
+
+  // Reachable by restoring a stale `screen` from storage without a source.
+  if (!src) {
+    return (
+      <div className="flex min-h-0 flex-1 items-center justify-center p-7">
+        <button
+          type="button"
+          onClick={goNew}
+          className="cursor-pointer text-[13.5px] font-medium text-violet hover:text-violet-deep"
+        >
+          No video selected — paste a link to start
+        </button>
+      </div>
+    )
+  }
 
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-7">

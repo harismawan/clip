@@ -9,6 +9,7 @@ import { clipTitle } from '../lib/derive'
 import { fmt } from '../lib/format'
 import { useApp } from '../state/AppContext'
 import { windowFor } from '../state/useSnipline'
+import type { Clip } from '../types'
 
 const CROPS = [
   { value: '9/16', label: '9:16', box: 'w-[52px] h-[92px]' },
@@ -57,7 +58,16 @@ export function EditorScreen() {
     return () => window.removeEventListener('keydown', onKey)
   }, [backToResults, markTrim, togglePlay])
 
-  const clip = state.clips.find((c) => c.id === state.editing) ?? { ...CLIPS[0], id: 0, selected: false }
+  // The editor is still a prototype (Tier A defers it), so it falls back to
+  // fixture data when opened without a real clip in hand.
+  const clip: Clip = state.clips.find((c) => c.id === state.editing) ?? {
+    ...CLIPS[0],
+    id: 'prototype',
+    idx: 0,
+    status: 'ready',
+    renders: {},
+    selected: false,
+  }
   const win = windowFor(clip)
   const inSec = win.start + (win.span * state.trimIn) / 100
   const outSec = win.start + (win.span * state.trimOut) / 100

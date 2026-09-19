@@ -1,7 +1,7 @@
 import { Button } from '../components/Button'
 import { Chip } from '../components/Chip'
 import { FEATURES } from '../config'
-import { RATIOS, SOURCES } from '../data/fixtures'
+import { RATIOS } from '../data/fixtures'
 import { cn } from '../lib/cn'
 import { clipAspect, clipTitle, exportLabel, selectedCount, sortClips } from '../lib/derive'
 import { fmt } from '../lib/format'
@@ -20,7 +20,7 @@ export function ResultsScreen() {
     redoClip,
   } = useApp()
 
-  const src = SOURCES[state.source]
+  const src = state.source
   const ordered = sortClips(state.clips, state.sortByScore)
   const selected = selectedCount(state.clips)
   const allSelected = state.clips.length > 0 && state.clips.every((c) => c.selected)
@@ -32,14 +32,26 @@ export function ResultsScreen() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex flex-none items-start gap-4 px-[26px] pt-5">
-        <div
-          className="hatch-sand w-[104px] flex-none rounded-[7px]"
-          style={{ aspectRatio: '16/9' }}
-        />
+        {src?.thumbnailUrl ? (
+          <img
+            src={src.thumbnailUrl}
+            alt=""
+            className="w-[104px] flex-none rounded-[7px] object-cover"
+            style={{ aspectRatio: '16/9' }}
+          />
+        ) : (
+          <div
+            className="hatch-sand w-[104px] flex-none rounded-[7px]"
+            style={{ aspectRatio: '16/9' }}
+          />
+        )}
         <div className="min-w-0 flex-1">
-          <h1 className="m-0 mb-1 text-[17px] leading-[1.3] font-semibold text-ink">{src.title}</h1>
+          <h1 className="m-0 mb-1 text-[17px] leading-[1.3] font-semibold text-ink">
+            {src?.title ?? 'Your clips'}
+          </h1>
           <p className="m-0 text-[12.5px] text-black/45">
-            {src.platform} · {src.length} source · {state.clips.length} clips · finished just now
+            {src ? `${src.platform} · ${src.length} source · ` : ''}
+            {state.clips.length} clips
           </p>
         </div>
         <Button
@@ -83,6 +95,8 @@ export function ResultsScreen() {
         <div className="grid max-w-[1120px] grid-cols-[repeat(auto-fill,minmax(min(152px,100%),1fr))] gap-4">
           {ordered.map((clip) => {
             const busy = !!state.regenerating[clip.id]
+            const render = clip.renders[state.filter]
+            const thumb = render?.thumbUrl ?? null
             return (
               <article
                 key={clip.id}
@@ -96,8 +110,15 @@ export function ResultsScreen() {
                   aria-pressed={clip.selected}
                   aria-label={`${clip.selected ? 'Deselect' : 'Select'} ${clipTitle(clip)}`}
                   onClick={() => toggleClip(clip.id)}
-                  className="hatch-clip flex w-full cursor-pointer flex-col justify-between p-[9px]"
-                  style={{ aspectRatio: ratio }}
+                  className={cn(
+                    'flex w-full cursor-pointer flex-col justify-between bg-cover bg-center p-[9px]',
+                    // The hatch placeholder stays for a clip still rendering.
+                    !thumb && 'hatch-clip',
+                  )}
+                  style={{
+                    aspectRatio: ratio,
+                    ...(thumb ? { backgroundImage: `url(${thumb})` } : {}),
+                  }}
                 >
                   <span className="flex items-start justify-between gap-1.5">
                     {FEATURES.showHookScore && (

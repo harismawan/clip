@@ -31,6 +31,11 @@ export function selectedCount(clips: Clip[]): number {
   return clips.filter((c) => c.selected).length
 }
 
+/**
+ * A re-cut used to shadow the headline with a `title` field. The server now
+ * returns the current headline in `t`, so there is nothing left to resolve --
+ * kept as a function so call sites need not change.
+ */
 export function clipTitle(clip: Clip): string {
-  return clip.title || clip.t
+  return clip.t
 }

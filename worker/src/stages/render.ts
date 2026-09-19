@@ -1,0 +1,187 @@
+/**
+ * Cut, reframe, burn subtitles, thumbnail, upload.
+ *
+ * Speaker-tracking reframe runs through the vendored autocrop.py (MediaPipe).
+ * When it is unavailable or fails on a given clip we fall back to a static
+ * centre crop rather than failing the job -- a centred clip is worth more to
+ * the user than no clip.
+ */
+import { join } from 'node:path'
+import { writeFile, readFile, unlink } from 'node:fs/promises'
+import { eq } from 'drizzle-orm'
+import { db, clips, renders, keys, s3 } from '../db.ts'
+import { run, exists } from '../../../shared/proc.ts'
+import { RATIO_DIMS } from '../../../shared/types.ts'
+import type { Ratio } from '../../../shared/types.ts'
+import type { TranscriptSegment, Clip } from '../../../shared/schema.ts'
+import { cutAccurate, thumbnail, reframeStatic, probeDimensions } from '../ffmpeg.ts'
+import { buildClipSrt, subtitleStyle } from '../srt.ts'
+
+const AUTOCROP = new URL('../../python/autocrop.py', import.meta.url).pathname
+
+let autocropChecked: boolean | null = null
+
+/** Is speaker-tracking reframe usable? Checked once per process. */
+async function autocropAvailable(): Promise<boolean> {
+  if (autocropChecked !== null) return autocropChecked
+  try {
+    if (!(await exists('python3'))) throw new Error('no python3')
+    // Importing mediapipe is the real test; the script exits non-zero without it.
+    await run(['python3', '-c', 'import mediapipe, numpy'], { timeoutMs: 60_000 })
+    autocropChecked = true
+  } catch {
+    console.warn('[render] mediapipe unavailable -- falling back to static centre crop')
+    autocropChecked = false
+  }
+  return autocropChecked
+}
+
+export interface RenderClipOptions {
+  jobId: string
+  clip: Clip
+  sourcePath: string
+  workDir: string
+  ratios: Ratio[]
+  segments: TranscriptSegment[]
+  burnSubtitles: boolean
+}
+
+/** Render every requested ratio for one clip and upload the results. */
+export async function renderClip(opts: RenderClipOptions): Promise<void> {
+  const { clip, workDir } = opts
+  const duration = clip.endSeconds - clip.startSeconds
+  const stem = `clip-${clip.idx}`
+  const cutPath = join(workDir, `${stem}.mp4`)
+
+  await db.update(clips).set({ status: 'rendering' }).where(eq(clips.id, clip.id))
+
+  // Re-encode rather than stream-copy: a copy can only cut on keyframes, and a
+  // boundary that drifts a second or two cuts off the hook, which is the whole
+  // point of the clip.
+  await cutAccurate(opts.sourcePath, cutPath, clip.startSeconds, duration)
+
+  let srtPath: string | undefined
+  if (opts.burnSubtitles) {
+    const srt = buildClipSrt(opts.segments, clip.startSeconds, clip.endSeconds)
+    if (srt.trim()) {
+      srtPath = join(workDir, `${stem}.srt`)
+      await writeFile(srtPath, srt, 'utf8')
+    }
+  }
+
+  const useAutocrop = await autocropAvailable()
+  let anySucceeded = false
+
+  for (const ratio of opts.ratios) {
+    const dims = RATIO_DIMS[ratio]
+    const outPath = join(workDir, `${stem}-${ratio.replace(':', 'x')}.mp4`)
+    const thumbPath = join(workDir, `${stem}-${ratio.replace(':', 'x')}.jpg`)
+
+    const [renderRow] = await db
+      .insert(renders)
+      .values({ clipId: clip.id, ratio, status: 'rendering' })
+      .returning()
+
+    try {
+      if (useAutocrop) {
+        try {
+          await runAutocrop(cutPath, outPath, dims, srtPath)
+        } catch (e) {
+          console.warn(
+            `[render] autocrop failed for clip ${clip.idx} ${ratio}, ` +
+              `using centre crop: ${(e as Error).message}`,
+          )
+          await reframeStatic(cutPath, outPath, dims.w, dims.h, srtPath, subtitleStyle(dims.h))
+        }
+      } else {
+        await reframeStatic(cutPath, outPath, dims.w, dims.h, srtPath, subtitleStyle(dims.h))
+      }
+
+      await thumbnail(outPath, thumbPath, Math.min(1, duration / 2))
+
+      const [mp4, jpg] = await Promise.all([readFile(outPath), readFile(thumbPath)])
+      const s3Key = keys.render(opts.jobId, clip.id, ratio)
+      const thumbKey = keys.thumb(opts.jobId, clip.id, ratio)
+
+      await Promise.all([
+        s3.upload(s3Key, mp4, 'video/mp4'),
+        s3.upload(thumbKey, jpg, 'image/jpeg'),
+      ])
+
+      const actual = await probeDimensions(outPath).catch(() => ({
+        width: dims.w,
+        height: dims.h,
+      }))
+
+      await db
+        .update(renders)
+        .set({
+          s3Key,
+          thumbKey,
+          width: actual.width,
+          height: actual.height,
+          sizeBytes: mp4.byteLength,
+          durationSeconds: duration,
+          status: 'ready',
+        })
+        .where(eq(renders.id, renderRow.id))
+
+      anySucceeded = true
+
+      // Local copies are uploaded; free the disk before the next ratio.
+      await Promise.all([unlink(outPath).catch(() => {}), unlink(thumbPath).catch(() => {})])
+    } catch (e) {
+      const message = (e as Error).message.slice(0, 500)
+      console.error(`[render] clip ${clip.idx} ${ratio} failed:`, message)
+      await db
+        .update(renders)
+        .set({ status: 'failed', error: message })
+        .where(eq(renders.id, renderRow.id))
+    }
+  }
+
+  await Promise.all([
+    unlink(cutPath).catch(() => {}),
+    srtPath ? unlink(srtPath).catch(() => {}) : Promise.resolve(),
+  ])
+
+  await db
+    .update(clips)
+    .set({
+      status: anySucceeded ? 'ready' : 'failed',
+      error: anySucceeded ? null : 'Every requested format failed to render.',
+    })
+    .where(eq(clips.id, clip.id))
+}
+
+/**
+ * ponytail: autocrop re-runs MediaPipe analysis for every ratio, so a
+ * three-format clip pays the face-tracking cost three times. Splitting
+ * autocrop.py into analyse-once / render-N would cut roughly 2/3 of the
+ * tracking time -- worth doing if render wall-clock becomes the complaint.
+ */
+async function runAutocrop(
+  input: string,
+  output: string,
+  dims: { w: number; h: number },
+  subtitlePath?: string,
+): Promise<void> {
+  const args = [
+    'python3',
+    AUTOCROP,
+    input,
+    '--out-file',
+    output,
+    '--out-w',
+    String(dims.w),
+    '--out-h',
+    String(dims.h),
+  ]
+  if (subtitlePath) {
+    args.push('--subtitles', subtitlePath, '--sub-style', subtitleStyle(dims.h))
+  }
+
+  // MediaPipe on 4 cores handles a 90s clip well inside this; the timeout is a
+  // stuck-process guard, not a performance budget.
+  await run(args, { timeoutMs: 15 * 60_000 })
+}

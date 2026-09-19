@@ -1,12 +1,11 @@
 import { Button } from '../components/Button'
-import { SOURCES } from '../data/fixtures'
 import { ago } from '../lib/format'
 import { useApp } from '../state/AppContext'
 
 export function ProjectsScreen() {
   const { state, goNew, openProject } = useApp()
   const { projects } = state
-  const totalClips = projects.reduce((n, p) => n + p.clips.length, 0)
+  const totalClips = projects.reduce((n, p) => n + p.clipCount, 0)
 
   return (
     <div className="min-h-0 flex-1 overflow-auto px-7 py-[26px]">
@@ -37,16 +36,25 @@ export function ProjectsScreen() {
               key={project.id}
               className="flex items-center gap-3.5 rounded-[18px] border-[1.5px] border-[rgba(23,20,18,.16)] bg-white p-[13px]"
             >
-              <div
-                className="hatch-sand flex w-[82px] flex-none items-center justify-center rounded-[7px] border border-black/12"
-                style={{ aspectRatio: '16/9' }}
-              />
+              {project.source.thumbnailUrl ? (
+                <img
+                  src={project.source.thumbnailUrl}
+                  alt=""
+                  className="w-[82px] flex-none rounded-[7px] border border-black/12 object-cover"
+                  style={{ aspectRatio: '16/9' }}
+                />
+              ) : (
+                <div
+                  className="hatch-sand flex w-[82px] flex-none items-center justify-center rounded-[7px] border border-black/12"
+                  style={{ aspectRatio: '16/9' }}
+                />
+              )}
               <div className="min-w-0 flex-1">
                 <div className="mb-[3px] truncate text-[13.5px] font-semibold text-ink">
                   {project.title}
                 </div>
                 <div className="text-[11.5px] text-black/45">
-                  {SOURCES[project.source].platform} · {project.clips.length} clips ·{' '}
+                  {project.source.platform} · {project.clipCount} clips ·{' '}
                   {ago(project.createdAt)}
                 </div>
               </div>

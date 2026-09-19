@@ -1,8 +1,19 @@
-import type { ClipSeed, Ratio, Source, SourceKey } from '../types'
+import type { Ratio, SourceKey } from '../types'
+
+/** A clip without its server fields. Only the editor prototype still uses these. */
+export interface ClipSeed {
+  t: string
+  s: number
+  e: number
+  sc: number
+  sn: string
+  cap: string
+  line: string
+}
 
 /**
- * Stand-in output from a single analysed source video. Ordered as the model
- * returned them; the results grid re-sorts by hook score or by timestamp.
+ * PROTOTYPE DATA. The results grid is served by the API now; these remain only
+ * because the editor screen is still a mock (Tier A defers it).
  */
 export const CLIPS: ClipSeed[] = [
   {
@@ -123,21 +134,15 @@ export const ALT_TITLES = [
   'Trimmed to the punchline',
 ]
 
-export const SOURCES: Record<SourceKey, Source> = {
-  stream: {
-    platform: 'Twitch VOD',
-    title: 'Late night build stream — shipping the whole thing in one sitting',
-    length: '1:58:24',
-    meta: 'channelname · streamed 3 days ago · 1080p60 available',
-    eta: '~6 min',
-  },
-  podcast: {
-    platform: 'YouTube',
-    title: 'Podcast ep. 41 — quitting the 9 to 5 too early',
-    length: '45:12',
-    meta: 'yourchannel · posted last week · 1080p available',
-    eta: '~3 min',
-  },
+/**
+ * Links the "or try one of these" buttons paste into the box.
+ *
+ * These replace the old SOURCES fixture: source metadata is resolved by the
+ * server from the URL now, so the app only needs something real to analyse.
+ */
+export const SAMPLE_URLS: Record<SourceKey, string> = {
+  podcast: 'https://www.youtube.com/watch?v=by3MhO0xVng',
+  stream: 'https://www.youtube.com/watch?v=zSuUI7J1OaU',
 }
 
 export const LENGTHS = ['<30s', '30–60s', '60–90s']

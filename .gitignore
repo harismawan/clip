@@ -22,3 +22,11 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+references/
+# Local secrets
+.env
+
+# Worker scratch (video downloads + intermediates)
+worker/.work/
+worker/.venv/
