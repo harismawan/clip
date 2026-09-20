@@ -1,0 +1,306 @@
+/**
+ * The job pipeline: download -> transcribe -> analyse -> render -> finalize.
+ *
+ * Every stage boundary re-checks cancellation and reports progress. Expensive
+ * intermediate results (the download, the transcript) are keyed to the video
+ * rather than the job so a regenerate or a re-cut does not pay for them twice.
+ */
+import { join } from 'node:path'
+import { mkdir, rm, access } from 'node:fs/promises'
+import { eq, desc } from 'drizzle-orm'
+import { db, jobs, videos, transcripts, clips, renders } from './db.ts'
+import { env } from './env.ts'
+import { report, setStatus, assertNotCancelled, CancelledError, forgetJob } from './progress.ts'
+import { assertYtdlpFresh, assertDiskSpace, download, probe } from '../../shared/ytdlp.ts'
+import { transcribe } from './stages/transcribe.ts'
+import { analyze } from './stages/analyze.ts'
+import { renderClip } from './stages/render.ts'
+import { validateRanges, textInRange } from './ranges.ts'
+import { wrapHookLine } from './srt.ts'
+import { keys, s3 } from './db.ts'
+import { RATIOS } from '../../shared/types.ts'
+import type { Ratio } from '../../shared/types.ts'
+import type { TranscriptSegment } from '../../shared/schema.ts'
+
+export async function processJob(jobId: string): Promise<void> {
+  const workDir = join(env.WORK_DIR, jobId)
+
+  try {
+    const [job] = await db.select().from(jobs).where(eq(jobs.id, jobId)).limit(1)
+    if (!job) throw new Error(`Job ${jobId} no longer exists`)
+    if (job.status === 'cancelled') throw new CancelledError()
+
+    const [video] = await db.select().from(videos).where(eq(videos.id, job.videoId)).limit(1)
+    if (!video) throw new Error('Source video row is missing')
+
+    await setStatus(jobId, {
+      status: 'downloading',
+      stage: 'Starting',
+      progress: 0,
+      error: null,
+      startedAt: new Date(),
+    })
+
+    await mkdir(workDir, { recursive: true })
+
+    // --- 1. download ---------------------------------------------------------
+    await assertNotCancelled(jobId)
+    const sourcePath = await ensureDownloaded(jobId, video, workDir)
+
+    // --- 2. transcribe -------------------------------------------------------
+    await assertNotCancelled(jobId)
+    const segments = await ensureTranscript(jobId, video.id, sourcePath, video.durationSeconds, workDir)
+
+    // --- 3. analyse ----------------------------------------------------------
+    await assertNotCancelled(jobId)
+    await setStatus(jobId, { status: 'analyzing', stage: 'Scoring moments', progress: 48 })
+
+    const candidates = await analyze({
+      segments,
+      durationSeconds: video.durationSeconds,
+      lengthIdx: job.lengthPreset,
+      count: job.clipCount,
+      title: video.title,
+    })
+
+    const ranges = validateRanges(candidates, {
+      durationSeconds: video.durationSeconds,
+      lengthIdx: job.lengthPreset,
+      count: job.clipCount,
+      segments,
+    })
+
+    if (ranges.length === 0) {
+      throw new Error(
+        'No usable moments were found in that video. Try a different clip length, or a source with more speech.',
+      )
+    }
+
+    // Replace any previous clips (a regenerate re-enters here).
+    await db.delete(clips).where(eq(clips.jobId, jobId))
+
+    const clipRows = await db
+      .insert(clips)
+      .values(
+        ranges.map((r, i) => ({
+          jobId,
+          idx: i,
+          title: r.title,
+          startSeconds: r.start,
+          endSeconds: r.end,
+          score: r.score,
+          snippet: r.snippet || textInRange(segments, r.start, r.end).slice(0, 220),
+          caption: r.caption || r.title,
+          subtitleLine: wrapHookLine(r.line || r.title),
+          status: 'pending' as const,
+        })),
+      )
+      .returning()
+
+    await setStatus(jobId, {
+      status: 'rendering',
+      stage: `Rendering 0 of ${clipRows.length}`,
+      progress: 60,
+    })
+
+    // --- 4. render -----------------------------------------------------------
+    const ratios = RATIOS.filter((r) => (job.formats as Record<string, boolean>)[r])
+    for (const [i, clip] of clipRows.entries()) {
+      await assertNotCancelled(jobId)
+      await report(jobId, 'rendering', `Rendering ${i + 1} of ${clipRows.length}`, i / clipRows.length)
+
+      await renderClip({
+        jobId,
+        clip,
+        sourcePath,
+        workDir,
+        ratios,
+        segments,
+        burnSubtitles: job.burnSubtitles,
+      })
+    }
+
+    // --- 5. finalize ---------------------------------------------------------
+    await setStatus(jobId, { status: 'rendering', stage: 'Cleaning up', progress: 96 })
+    await cleanup(workDir, video.id)
+
+    await setStatus(jobId, {
+      status: 'completed',
+      stage: 'Done',
+      progress: 100,
+      error: null,
+      completedAt: new Date(),
+    })
+  } catch (e) {
+    // Scratch is deleted on every exit path. Leaving a multi-GB download behind
+    // after a failure is how 14GB of free disk disappears in three attempts.
+    await rm(workDir, { recursive: true, force: true }).catch(() => {})
+
+    if (e instanceof CancelledError) {
+      await setStatus(jobId, {
+        status: 'cancelled',
+        stage: 'Cancelled',
+        completedAt: new Date(),
+      }).catch(() => {})
+      return
+    }
+
+    const message = (e as Error).message ?? 'Unknown error'
+    console.error(`[pipeline] job ${jobId} failed:`, message)
+    await setStatus(jobId, {
+      status: 'failed',
+      stage: 'Failed',
+      error: message.slice(0, 1000),
+      completedAt: new Date(),
+    }).catch(() => {})
+  } finally {
+    forgetJob(jobId)
+  }
+}
+
+/** Download unless a previous run left a usable file behind. */
+async function ensureDownloaded(
+  jobId: string,
+  video: typeof videos.$inferSelect,
+  workDir: string,
+): Promise<string> {
+  if (video.scratchPath && (await fileExists(video.scratchPath))) {
+    await report(jobId, 'downloading', 'Using cached download', 1)
+    return video.scratchPath
+  }
+
+  await assertYtdlpFresh(env.YTDLP_MAX_AGE_DAYS)
+
+  // Re-probe for a current size estimate: the disk guard is only useful with a
+  // number, and the stored row may predate the current format availability.
+  const info = await probe(video.url).catch(() => null)
+  await assertDiskSpace(env.WORK_DIR, info?.estimatedBytes ?? null, env.MIN_FREE_DISK_GB)
+
+  await setStatus(jobId, { status: 'downloading', stage: 'Downloading source', progress: 0 })
+
+  const path = await download(video.url, workDir, (f) => {
+    void report(jobId, 'downloading', 'Downloading source', f)
+  })
+
+  await db.update(videos).set({ scratchPath: path }).where(eq(videos.id, video.id))
+  return path
+}
+
+/** Reuse an existing transcript for this video; otherwise produce one. */
+async function ensureTranscript(
+  jobId: string,
+  videoId: string,
+  sourcePath: string,
+  durationSeconds: number,
+  workDir: string,
+): Promise<TranscriptSegment[]> {
+  const [existing] = await db
+    .select()
+    .from(transcripts)
+    .where(eq(transcripts.videoId, videoId))
+    .orderBy(desc(transcripts.createdAt))
+    .limit(1)
+
+  if (existing && existing.segments.length > 0) {
+    await report(jobId, 'transcribing', 'Using cached transcript', 1)
+    return existing.segments
+  }
+
+  await setStatus(jobId, { status: 'transcribing', stage: 'Transcribing', progress: 24 })
+
+  const result = await transcribe(sourcePath, workDir, durationSeconds, (f) => {
+    void report(jobId, 'transcribing', 'Transcribing', f)
+  })
+
+  let srtKey: string | null = null
+  if (result.srt.trim()) {
+    srtKey = keys.srt(videoId)
+    await s3.upload(srtKey, Buffer.from(result.srt, 'utf8'), 'application/x-subrip').catch((e) => {
+      // The sidecar SRT is a convenience; losing it must not fail the job.
+      console.warn('[pipeline] could not upload transcript SRT:', e.message)
+      srtKey = null
+    })
+  }
+
+  await db.insert(transcripts).values({
+    videoId,
+    language: result.language,
+    srtKey,
+    segments: result.segments,
+  })
+
+  return result.segments
+}
+
+/** Delete scratch and forget the cached download path. */
+async function cleanup(workDir: string, videoId: string): Promise<void> {
+  await rm(workDir, { recursive: true, force: true }).catch(() => {})
+  await db.update(videos).set({ scratchPath: null }).where(eq(videos.id, videoId))
+}
+
+/**
+ * Re-cut one clip: re-render the existing range from a freshly downloaded
+ * source. Reuses the transcript, so this costs a download plus one render
+ * rather than a full re-analysis.
+ */
+export async function recutClip(jobId: string, clipId: string): Promise<void> {
+  const workDir = join(env.WORK_DIR, `recut-${clipId}`)
+
+  try {
+    const [clip] = await db.select().from(clips).where(eq(clips.id, clipId)).limit(1)
+    if (!clip) throw new Error('Clip no longer exists')
+
+    const [job] = await db.select().from(jobs).where(eq(jobs.id, jobId)).limit(1)
+    if (!job) throw new Error('Job no longer exists')
+
+    const [video] = await db.select().from(videos).where(eq(videos.id, job.videoId)).limit(1)
+    if (!video) throw new Error('Source video row is missing')
+
+    const [transcript] = await db
+      .select()
+      .from(transcripts)
+      .where(eq(transcripts.videoId, video.id))
+      .orderBy(desc(transcripts.createdAt))
+      .limit(1)
+
+    if (!transcript) throw new Error('No transcript for this video; regenerate the job instead.')
+
+    await mkdir(workDir, { recursive: true })
+    const sourcePath = await ensureDownloaded(jobId, video, workDir)
+
+    // Drop the previous renders, in storage as well as in the database.
+    const old = await db.select().from(renders).where(eq(renders.clipId, clipId))
+    const objects = old.flatMap((r) => [r.s3Key, r.thumbKey].filter(Boolean) as string[])
+    if (objects.length) await s3.deleteMany(objects).catch(() => {})
+    await db.delete(renders).where(eq(renders.clipId, clipId))
+
+    await renderClip({
+      jobId,
+      clip,
+      sourcePath,
+      workDir,
+      ratios: RATIOS.filter((r) => (job.formats as Record<string, boolean>)[r]) as Ratio[],
+      segments: transcript.segments,
+      burnSubtitles: job.burnSubtitles,
+    })
+  } catch (e) {
+    const message = (e as Error).message ?? 'Unknown error'
+    console.error(`[pipeline] recut ${clipId} failed:`, message)
+    await db
+      .update(clips)
+      .set({ status: 'failed', error: message.slice(0, 500) })
+      .where(eq(clips.id, clipId))
+      .catch(() => {})
+  } finally {
+    await rm(workDir, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await access(path)
+    return true
+  } catch {
+    return false
+  }
+}

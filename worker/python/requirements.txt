@@ -1,0 +1,10 @@
+# Python side of the worker: transcription and speaker-tracking reframe.
+# Installed into worker/.venv by scripts/setup-python.sh
+#
+# Versions match clipper/requirements.txt, which is the tested combination --
+# mediapipe and numpy are tightly coupled and drift badly across majors.
+
+mediapipe==0.10.35
+numpy==2.4.6
+opencv-python-headless==4.13.0.92
+whisper-ctranslate2==0.5.7

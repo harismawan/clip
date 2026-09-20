@@ -22,3 +22,13 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+references/
+# Local secrets
+.env
+
+# Worker scratch (video downloads + intermediates). WORK_DIR in .env is
+# resolved against the worker's cwd, so this lives under worker/.
+worker/output/
+worker/.work/
+worker/.venv/

@@ -1,0 +1,78 @@
+# Local infrastructure for the clip pipeline: Postgres (app data + pg-boss queue)
+# and MinIO (S3-compatible object storage for rendered clips).
+#
+#   cd infra && docker compose up -d
+#
+# Production swaps MinIO for real S3 by pointing S3_* at AWS; nothing else changes.
+
+name: clip
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-clip}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clip}
+      POSTGRES_DB: ${POSTGRES_DB:-clip}
+    ports:
+      # Localhost only. An exposed Postgres on a shared box is a standing
+      # invitation; nothing outside this machine needs to reach it.
+      - "127.0.0.1:${POSTGRES_PORT:-5445}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # pg_boss creates its own schema on first connect; readiness is just Postgres.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-clip} -d ${POSTGRES_DB:-clip}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # This box has ~4GB available and whisper/ffmpeg need most of it. Keep
+    # Postgres small -- the workload is a handful of rows, not analytics.
+    command: >
+      postgres
+      -c shared_buffers=128MB
+      -c max_connections=50
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-clipminio}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-clipminio123}
+    ports:
+      # Localhost only: the API presigns URLs for the browser, so MinIO itself
+      # never needs to be reachable from outside. Publishing it would expose the
+      # console and every object with it.
+      - "127.0.0.1:${S3_PORT:-9020}:9000"      # API
+      - "127.0.0.1:${S3_CONSOLE_PORT:-9021}:9001"  # web console
+    volumes:
+      - miniodata:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: create the bucket, then exit. Re-running compose re-runs it
+  # harmlessly (mb --ignore-existing).
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-clipminio}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-clipminio123}
+      S3_BUCKET: ${S3_BUCKET:-clips}
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${S3_ACCESS_KEY} $${S3_SECRET_KEY} &&
+      mc mb --ignore-existing local/$${S3_BUCKET} &&
+      echo 'bucket ready: '$${S3_BUCKET}
+      "
+
+volumes:
+  pgdata:
+  miniodata:
