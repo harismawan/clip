@@ -21,26 +21,17 @@ server {
   root /var/www/html/clip2/dist;
   index index.html;
 
-  # THE ACTUAL GATE.
+  # NO GATE -- DELIBERATE, AND THE API IS PUBLIC BECAUSE OF IT.
   #
-  # API_TOKEN cannot protect this deployment: the SPA reads VITE_API_TOKEN at
-  # BUILD time (frontend/src/lib/api.ts), so the secret ships inside the JS
-  # bundle and anyone who loads the page can read it. Without something in
-  # front, POST /api/jobs is a public "download any URL and burn every core for
-  # 40 minutes" endpoint on a 4-core box.
+  # This vhost used to carry auth_basic, which was the only real gate: the SPA
+  # reads VITE_API_TOKEN at BUILD time (frontend/src/lib/api.ts), so that token
+  # ships inside the JS bundle and anyone who loads the page can read it. With
+  # basic auth removed, POST /api/jobs is an open "download any URL and burn
+  # every core for 40 minutes" endpoint on a 4-core box.
   #
-  # Basic auth covers the SPA, the API and the signed media URLs alike, and the
-  # browser replays the credentials automatically on <img>, <video> and
-  # <a download> requests, so nothing in the app has to know about it.
-  #
-  # Create the file before deploying. htpasswd (apache2-utils) is not installed
-  # on this box, and openssl is -- and $6$ is stronger than htpasswd's apr1
-  # default anyway. nginx hands anything that is not $apr1$ to crypt(3).
-  #   printf 'clip:%s\n' "$(openssl passwd -6)" | sudo tee /etc/nginx/.htpasswd-clip >/dev/null
-  #   sudo chown root:www-data /etc/nginx/.htpasswd-clip   # workers run as www-data
-  #   sudo chmod 640 /etc/nginx/.htpasswd-clip
-  auth_basic "clip";
-  auth_basic_user_file /etc/nginx/.htpasswd-clip;
+  # Owner's call. If this ever gets found, put access control in FRONT of nginx
+  # (Cloudflare Access, a VPN, Tailscale) or give the app a real login -- do not
+  # rely on API_TOKEN, which is not a secret here.
 
   # Nothing is uploaded through nginx -- sources are fetched by the worker and
   # renders are served out. This only needs to cover JSON request bodies.

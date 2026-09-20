@@ -14,7 +14,6 @@
 # Deliberately NOT done here:
 #   * touching .env — real secrets, placed once by hand
 #   * `git pull` — you deploy the tree you are looking at, not a moving target
-#   * creating the htpasswd file — a password belongs in your hands, not a script
 #
 # Usage: scripts/deploy.sh [options]   (run from anywhere)
 #   --skip-infra     don't touch docker compose
@@ -24,9 +23,7 @@
 #   --serial         run stages one at a time (easier to read when debugging)
 #   -h, --help       show this
 #
-# Optional: export DEPLOY_BASIC_AUTH='user:pass' to let the verify step probe
-# the site through nginx. Without it, verification only proves nginx is
-# demanding credentials, not what is behind them.
+# The site has NO authentication -- see the comment in deploy/nginx/$SITE.
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -36,7 +33,6 @@ SITE="clip2.mhamzah.id"
 WEB_DIST_TARGET="/var/www/html/clip2/dist"
 NGINX_AVAILABLE="/etc/nginx/sites-available/$SITE"
 NGINX_REPO_CONF="$REPO_ROOT/deploy/nginx/$SITE"
-HTPASSWD="/etc/nginx/.htpasswd-clip"
 PM2_APPS=( "clip-api" "clip-worker" )
 ECOSYSTEM="$REPO_ROOT/ecosystem.config.cjs"
 
@@ -48,7 +44,7 @@ for arg in "$@"; do
     --skip-api)   DO_API=0 ;;
     --skip-nginx) DO_NGINX=0 ;;
     --serial)     PARALLEL=0 ;;
-    -h|--help)    sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)    sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -131,22 +127,8 @@ if [ "$DO_API" = 1 ]; then
   fi
 fi
 
-# Without the password file nginx fails every request with 500, so the site is
-# down rather than merely unprotected. Refuse before reloading nginx.
-if [ "$DO_NGINX" = 1 ] && [ ! -f "$HTPASSWD" ]; then
-  die "$HTPASSWD missing. The bundle ships API_TOKEN, so basic auth is the real gate. Create it:
-       printf 'clip:%s\n' \"\$(openssl passwd -6)\" | sudo tee $HTPASSWD >/dev/null
-       sudo chown root:www-data $HTPASSWD && sudo chmod 640 $HTPASSWD"
-fi
-
-# Existing is not the same as readable. nginx workers run as www-data, and a
-# root-only password file answers every request with 500 -- which reads as "the
-# app is broken", not "the file has the wrong group".
-if [ "$DO_NGINX" = 1 ] && [ -f "$HTPASSWD" ]; then
-  if ! sudo -u www-data test -r "$HTPASSWD" 2>/dev/null; then
-    warn "www-data cannot read $HTPASSWD — nginx will answer 500. Fix with:"
-    warn "  sudo chown root:www-data $HTPASSWD && sudo chmod 640 $HTPASSWD"
-  fi
+if [ "$DO_NGINX" = 1 ]; then
+  warn "$SITE is unauthenticated — POST /api/jobs is open to anyone who finds it"
 fi
 ok "tooling, env and ports consistent (API :$API_PORT)"
 
@@ -192,8 +174,8 @@ stage_web_build() {
     bun install --frozen-lockfile 2>/dev/null || bun install
     # VITE_API_URL stays unset on purpose: in production the SPA and API share
     # an origin, and the client's default of a bare "/api" is what we want.
-    # VITE_API_TOKEN is baked into the bundle -- see the auth_basic comment in
-    # the vhost for why that is survivable here and not on its own.
+    # VITE_API_TOKEN is baked into the bundle, so it is public -- it satisfies
+    # the backend middleware, it does not protect anything. See the vhost.
     VITE_API_TOKEN="$API_TOKEN" bun run build
     [ -f dist/index.html ] || { echo "build produced no dist/index.html"; exit 1; }
   )
@@ -339,23 +321,16 @@ if [ "$DO_API" = 1 ]; then
 fi
 
 if [ "$DO_NGINX" = 1 ] || [ "$DO_WEB" = 1 ]; then
-  # 401 is the PASS here: it proves nginx is serving this vhost and that the
-  # gate is closed. A 200 without credentials would mean the site is wide open.
-  check "$SITE / demands auth" 401 "$(http_code "https://$SITE/")"
+  check "$SITE / serves the SPA" 200 "$(http_code "https://$SITE/")"
 
-  if [ -n "${DEPLOY_BASIC_AUTH:-}" ]; then
-    check "$SITE / (authenticated)" 200 "$(http_code -u "$DEPLOY_BASIC_AUTH" "https://$SITE/")"
-    # The one that proves the /api proxy block works: this must be JSON from the
-    # API, not the SPA's index.html.
-    api_probe="$(curl -s -u "$DEPLOY_BASIC_AUTH" -o /dev/null -w '%{http_code} %{content_type}' --max-time 10 "https://$SITE/api/health" || echo "000 none")"
-    case "$api_probe" in
-      200*application/json*) ok "$SITE /api via nginx (JSON)" ;;
-      502*) printf "    \033[31mFAIL\033[0m %s /api: 502 — nginx routes correctly but the API is not answering on :%s (pm2 logs clip-api)\n" "$SITE" "$API_PORT"; FAILED=1 ;;
-      *) printf "    \033[31mFAIL\033[0m %s /api returned '%s' — falling through to the SPA\n" "$SITE" "$api_probe"; FAILED=1 ;;
-    esac
-  else
-    info "set DEPLOY_BASIC_AUTH='user:pass' to also verify /api through nginx"
-  fi
+  # The one that proves the /api proxy block works: this must be JSON from the
+  # API, not the SPA's index.html.
+  api_probe="$(curl -s -o /dev/null -w '%{http_code} %{content_type}' --max-time 10 "https://$SITE/api/health" || echo "000 none")"
+  case "$api_probe" in
+    200*application/json*) ok "$SITE /api via nginx (JSON)" ;;
+    502*) printf "    \033[31mFAIL\033[0m %s /api: 502 — nginx routes correctly but the API is not answering on :%s (pm2 logs clip-api)\n" "$SITE" "$API_PORT"; FAILED=1 ;;
+    *) printf "    \033[31mFAIL\033[0m %s /api returned '%s' — falling through to the SPA\n" "$SITE" "$api_probe"; FAILED=1 ;;
+  esac
 fi
 
 say "done in $((SECONDS - START_TS))s"
