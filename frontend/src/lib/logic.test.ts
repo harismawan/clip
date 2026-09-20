@@ -174,3 +174,25 @@ test('ago reads as a coarse relative time', () => {
   expect(minsAgo(60 * 24)).toBe('yesterday')
   expect(minsAgo(60 * 24 * 6)).toBe('6 days ago')
 })
+
+test('mergeJob drops formats the job never rendered', () => {
+  // The API sends ONLY the ratios it rendered -- routes/jobs.ts builds it as
+  // Object.fromEntries(enabled.map(r => [r, true])), so absent means "not
+  // rendered", never "false".
+  const serverSent = { '9:16': true } as unknown as JobSnapshot['formats']
+  // Local prefs from the setup screen, where 1:1 happens to be ticked.
+  const local = { ...base, formats: { '9:16': true, '1:1': true, '4:5': false } }
+
+  const next = mergeJob(local as SnipState, snapshot({ formats: serverSent }))
+
+  // 1:1 must not survive: the results screen renders a tab per enabled format,
+  // and a tab whose renders[ratio] is undefined shows every card as the hatch
+  // placeholder instead of its thumbnail.
+  expect(next.formats).toEqual({ '9:16': true, '1:1': false, '4:5': false })
+})
+
+test('mergeJob keeps every format a multi-ratio job did render', () => {
+  const serverSent = { '9:16': true, '4:5': true } as unknown as JobSnapshot['formats']
+  const next = mergeJob(base, snapshot({ formats: serverSent }))
+  expect(next.formats).toEqual({ '9:16': true, '1:1': false, '4:5': true })
+})

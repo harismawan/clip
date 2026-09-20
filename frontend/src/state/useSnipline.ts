@@ -152,7 +152,21 @@ export function mergeJob(s: SnipState, job: JobSnapshot): SnipState {
     source: job.source,
     count: job.clipCount,
     lengthIdx: job.lengthIdx,
-    formats: { ...s.formats, ...job.formats },
+    /**
+     * REPLACED, not merged.
+     *
+     * The job is the only authoritative record of which ratios were actually
+     * rendered, and the API sends just those (`routes/jobs.ts` builds it as
+     * `Object.fromEntries(enabled.map(r => [r, true]))`), so a missing key means
+     * "not rendered" rather than "false".
+     *
+     * Merging these INTO the setup screen's preferences left ratios enabled that
+     * the job never produced -- 1:1 is ticked by default. ResultsScreen renders
+     * one tab per enabled format, and on such a tab `clip.renders[ratio]` is
+     * undefined, so `thumbUrl` was null and EVERY card fell back to the hatch
+     * placeholder instead of showing its thumbnail.
+     */
+    formats: Object.fromEntries(RATIOS.map((r) => [r, !!job.formats[r]])) as Record<Ratio, boolean>,
     subs: job.subs,
     progress: job.progress,
     stage: job.stage,

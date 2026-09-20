@@ -111,17 +111,30 @@ export function ResultsScreen() {
                   aria-pressed={clip.selected}
                   aria-label={`${clip.selected ? 'Deselect' : 'Select'} ${clipTitle(clip)}`}
                   onClick={() => toggleClip(clip.id)}
-                  className={cn(
-                    'flex w-full cursor-pointer flex-col justify-between bg-cover bg-center p-[9px]',
-                    // The hatch placeholder stays for a clip still rendering.
-                    !thumb && 'hatch-clip',
-                  )}
-                  style={{
-                    aspectRatio: ratio,
-                    ...(thumb ? { backgroundImage: `url(${thumb})` } : {}),
-                  }}
+                  className="hatch-clip relative flex w-full cursor-pointer flex-col justify-between p-[9px]"
+                  style={{ aspectRatio: ratio }}
                 >
-                  <span className="flex items-start justify-between gap-1.5">
+                  {/*
+                    A real <img> rather than a CSS background, for three reasons:
+                    onError can fall back (a background that 404s leaves a blank
+                    white card with no hint why), loading="lazy" matters at 24
+                    clips, and it gets alt text. The hatch sits underneath, so
+                    hiding a broken image reveals the placeholder again.
+                  */}
+                  {thumb && (
+                    <img
+                      src={thumb}
+                      alt=""
+                      loading="lazy"
+                      decoding="async"
+                      onError={(e) => {
+                        e.currentTarget.style.display = 'none'
+                      }}
+                      className="absolute inset-0 z-0 size-full object-cover"
+                    />
+                  )}
+
+                  <span className="relative z-10 flex items-start justify-between gap-1.5">
                     {FEATURES.showHookScore && (
                       <span
                         className={cn(
@@ -143,7 +156,7 @@ export function ResultsScreen() {
                       {clip.selected ? '✓' : ''}
                     </span>
                   </span>
-                  <span className="flex justify-end">
+                  <span className="relative z-10 flex justify-end">
                     <span className="rounded-[4px] bg-black/60 px-[5px] py-0.5 text-[10.5px] font-medium text-white">
                       {fmt(clip.e - clip.s)}
                     </span>
