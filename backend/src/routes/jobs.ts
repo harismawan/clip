@@ -3,7 +3,7 @@ import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
 import { eq, and, desc, inArray } from 'drizzle-orm'
 import { db, jobs, videos, clips, renders } from '../db/index.ts'
-import { ownedJob, countActiveJobs, countJobsSince } from '../ownership.ts'
+import { ownedJob, activeJob, countActiveJobs, countJobsSince } from '../ownership.ts'
 import { quotaVerdict } from '../quota.ts'
 import { env } from '../env.ts'
 import { toJobDTO, toSourceDTO } from '../mappers.ts'
@@ -66,6 +66,24 @@ jobsRoutes.post('/', async (c) => {
   await enqueueProcess({ jobId: job.id })
 
   return c.json({ jobId: job.id }, 201)
+})
+
+/**
+ * The job still running, or null.
+ *
+ * MUST stay above '/:id': Hono matches in registration order, so declaring this
+ * second would make '/active' parse as a job id and 404 forever.
+ *
+ * Lets the app show "processing…" on any screen without having to remember an id
+ * across reloads or devices -- see activeJob in ownership.ts.
+ */
+jobsRoutes.get('/active', async (c) => {
+  const job = await activeJob(c.get('user').id)
+  if (!job) return c.json(null)
+
+  const found = await loadJob(c.get('user').id, job.id)
+  if (!found) return c.json(null)
+  return c.json(await toJobDTO(found.job, found.video, found.clipRows, found.renderRows))
 })
 
 /** Full job state: options, source, clips, presigned render URLs. */

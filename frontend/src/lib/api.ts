@@ -123,6 +123,14 @@ export const api = {
 
   getJob: (id: string) => call<JobSnapshot>(`/jobs/${id}`),
 
+  /**
+   * The job still running, or null. Asked once at boot so the progress indicator
+   * works on every screen without the app having to remember an id -- jobId
+   * lives in localStorage, so a job started on another device is invisible to it
+   * and clearing site data loses it.
+   */
+  activeJob: () => call<JobSnapshot | null>('/jobs/active'),
+
   cancelJob: (id: string) => call<{ ok: boolean }>(`/jobs/${id}/cancel`, { method: 'POST' }),
 
   regenerate: (id: string) =>

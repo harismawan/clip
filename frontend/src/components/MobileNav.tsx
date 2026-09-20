@@ -1,8 +1,9 @@
 import { cn } from '../lib/cn'
-import { quota } from '../lib/derive'
+import { jobIndicator, quota } from '../lib/derive'
 import { useApp } from '../state/AppContext'
 import type { Screen } from '../types'
 import { Button } from './Button'
+import { JobIndicator } from './JobIndicator'
 import { Logo } from './Logo'
 
 const NAV: Array<{ label: string; screen: Screen }> = [
@@ -15,6 +16,7 @@ const NAV: Array<{ label: string; screen: Screen }> = [
 /** Stands in for the sidebar below the medium breakpoint. */
 export function MobileNav() {
   const { state, go, goNew, goResults } = useApp()
+  const job = jobIndicator(state)
 
   return (
     <div className="flex-none border-b border-black/8 bg-white px-4 py-3 md:hidden">
@@ -25,6 +27,13 @@ export function MobileNav() {
           + New
         </Button>
       </div>
+      <JobIndicator
+        indicator={job}
+        variant="nav"
+        current={state.screen === job.target}
+        onOpen={() => go(job.target)}
+      />
+
       <div className="-mx-1 mt-2 flex gap-1 overflow-x-auto">
         {NAV.map((item) => {
           const active = state.screen === item.screen

@@ -28,6 +28,7 @@ let ownedJob: typeof import('./ownership.ts')['ownedJob']
 let ownedClips: typeof import('./ownership.ts')['ownedClips']
 let countActiveJobs: typeof import('./ownership.ts')['countActiveJobs']
 let countJobsSince: typeof import('./ownership.ts')['countJobsSince']
+let activeJob: typeof import('./ownership.ts')['activeJob']
 
 let alice = ''
 let bob = ''
@@ -42,7 +43,9 @@ beforeAll(async () => {
 
   const dbMod = await import('./db/index.ts')
   ;({ db, users, videos, jobs, clips } = dbMod)
-  ;({ ownedJob, ownedClips, countActiveJobs, countJobsSince } = await import('./ownership.ts'))
+  ;({ ownedJob, ownedClips, countActiveJobs, countJobsSince, activeJob } = await import(
+    './ownership.ts',
+  ))
 
   const stamp = Date.now()
   const [a] = await db
@@ -146,4 +149,36 @@ maybe('the daily count is per user and respects the window', async () => {
 
   const future = new Date(Date.now() + 3_600_000)
   expect(await countJobsSince(alice, future)).toBe(0)
+})
+
+maybe('the in-flight job is reachable without knowing its id', async () => {
+  // Both fixtures start 'pending', which is active.
+  const found = await activeJob(alice)
+  expect(found?.id).toBe(aliceJob)
+})
+
+maybe("one user's active job never appears as another's", async () => {
+  const found = await activeJob(bob)
+  expect(found?.id).toBe(bobJob)
+  expect(found?.id).not.toBe(aliceJob)
+})
+
+maybe('a finished job is not "in progress"', async () => {
+  await db.update(jobs).set({ status: 'completed' }).where(eq(jobs.id, aliceJob))
+  expect(await activeJob(alice)).toBeNull()
+  await db.update(jobs).set({ status: 'pending' }).where(eq(jobs.id, aliceJob))
+})
+
+maybe('a cancelled job is not "in progress" either', async () => {
+  await db.update(jobs).set({ status: 'cancelled' }).where(eq(jobs.id, aliceJob))
+  expect(await activeJob(alice)).toBeNull()
+  await db.update(jobs).set({ status: 'pending' }).where(eq(jobs.id, aliceJob))
+})
+
+maybe('every mid-pipeline status counts as in progress', async () => {
+  for (const status of ['downloading', 'transcribing', 'analyzing', 'rendering'] as const) {
+    await db.update(jobs).set({ status }).where(eq(jobs.id, aliceJob))
+    expect((await activeJob(alice))?.id).toBe(aliceJob)
+  }
+  await db.update(jobs).set({ status: 'pending' }).where(eq(jobs.id, aliceJob))
 })

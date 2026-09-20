@@ -1,8 +1,9 @@
 import { cn } from '../lib/cn'
-import { quota } from '../lib/derive'
+import { jobIndicator, quota } from '../lib/derive'
 import { useApp } from '../state/AppContext'
 import type { Screen } from '../types'
 import { Button } from './Button'
+import { JobIndicator } from './JobIndicator'
 import { Logo } from './Logo'
 import { Meter } from './Meter'
 
@@ -16,6 +17,7 @@ const NAV: Array<{ label: string; screen: Screen }> = [
 export function Sidebar() {
   const { state, goNew, go, goResults, signOut } = useApp()
   const { label, width } = quota(state.videosUsed)
+  const job = jobIndicator(state)
 
   return (
     <nav className="hidden w-[212px] flex-none flex-col border-r border-black/8 bg-white px-3.5 py-[18px] md:flex">
@@ -28,6 +30,14 @@ export function Sidebar() {
       </Button>
 
       <div className="flex flex-col gap-0.5">
+        {/* Only rendered while there is a job worth reporting. */}
+        <JobIndicator
+          indicator={job}
+          variant="nav"
+          current={state.screen === job.target}
+          onOpen={() => go(job.target)}
+        />
+
         {NAV.map((item) => {
           const active = state.screen === item.screen
           return (

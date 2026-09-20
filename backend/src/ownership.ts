@@ -8,7 +8,7 @@
  * through here makes the owner check impossible to omit rather than merely
  * documented.
  */
-import { and, eq, gte, inArray, count } from 'drizzle-orm'
+import { and, desc, eq, gte, inArray, count } from 'drizzle-orm'
 import { db, jobs, clips } from './db/index.ts'
 import { isTerminal } from '../../shared/types.ts'
 import { jobStatus } from '../../shared/schema.ts'
@@ -49,6 +49,26 @@ export async function ownedClips(userId: string, clipIds: string[]): Promise<Cli
 export async function ownedClip(userId: string, clipId: string): Promise<Clip | null> {
   const [clip] = await ownedClips(userId, [clipId])
   return clip ?? null
+}
+
+/**
+ * The user's job that is still running, if any.
+ *
+ * Exists so the app can ask "am I processing something?" without knowing an id.
+ * The client cannot answer that itself: `jobId` lives in localStorage, so a job
+ * started on another device is invisible and clearing site data loses it.
+ *
+ * Returns one job, not a list, because the quota refuses a second concurrent job
+ * (see quota.ts). `orderBy` is belt and braces for rows predating that rule.
+ */
+export async function activeJob(userId: string): Promise<Job | null> {
+  const [job] = await db
+    .select()
+    .from(jobs)
+    .where(and(eq(jobs.userId, userId), inArray(jobs.status, ACTIVE_STATUSES)))
+    .orderBy(desc(jobs.createdAt))
+    .limit(1)
+  return job ?? null
 }
 
 export async function countActiveJobs(userId: string): Promise<number> {

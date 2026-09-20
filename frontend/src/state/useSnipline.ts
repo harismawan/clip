@@ -11,15 +11,6 @@ const MIN_TRIM_SPAN = 4
 
 const DEFAULT_TRIM = { trimIn: 22, trimOut: 54, playhead: 34 }
 
-/** Job states where the processing screen should keep waiting. */
-const ACTIVE: readonly JobStatus[] = [
-  'pending',
-  'downloading',
-  'transcribing',
-  'analyzing',
-  'rendering',
-]
-
 /**
  * The action currently in flight, or null.
  *
@@ -281,8 +272,38 @@ export function useSnipline() {
       try {
         const me = await auth.me()
         if (cancelled) return
-        if (me) patch({ user: me, screen: restoredSlice.screen ?? 'new' })
-        else patch({ user: null, screen: 'login' })
+        if (!me) {
+          patch({ user: null, screen: 'login' })
+          return
+        }
+        patch({ user: me, screen: restoredSlice.screen ?? 'new' })
+
+        /**
+         * Pick the job back up, from the server rather than from storage.
+         *
+         * This runs whatever screen we land on, because the progress indicator
+         * has to work everywhere -- and because the only reliable answer to "am I
+         * processing something?" lives on the server. A job started on a phone is
+         * absent from this browser's localStorage, and clearing site data loses
+         * the id entirely.
+         */
+        const running = await api.activeJob().catch(() => null)
+        if (cancelled) return
+
+        if (running) {
+          setState((s) => mergeJob(s, running))
+          // Subscribe regardless of screen, so the percentage ticks live in the
+          // sidebar and banner rather than sitting frozen until you navigate.
+          watchJob(running.id)
+        } else if (
+          restoredSlice.jobId &&
+          (restoredSlice.screen === 'results' || restoredSlice.screen === 'processing')
+        ) {
+          // Nothing running, but we came back to a clip screen: re-fetch the
+          // remembered job so the grid is not empty. (activeJob answers null for
+          // a finished job, which is most reloads onto 'results'.)
+          await refreshJob(restoredSlice.jobId)
+        }
       } catch {
         // The API is unreachable. The login screen is the honest place to land:
         // nothing else in the app can work either.
@@ -353,13 +374,31 @@ export function useSnipline() {
             unsubscribe.current?.()
             unsubscribe.current = null
             void refreshJob(jobId).then(() => {
-              setState((s) => ({ ...s, jobDone: true, screen: 'results' }))
+              setState((s) => ({
+                ...s,
+                jobDone: true,
+                /**
+                 * Only follow the job to its clips if the user is actually
+                 * watching it finish. Now that the progress indicator is visible
+                 * on every screen, navigating out from under someone who is
+                 * mid-edit in Settings is worse than a badge they can click --
+                 * the indicator flips to "Clips ready" and waits for them.
+                 */
+                screen: s.screen === 'processing' ? 'results' : s.screen,
+              }))
               void loadProjects()
             })
           } else if (e.status === 'failed' || e.status === 'cancelled') {
             unsubscribe.current?.()
             unsubscribe.current = null
-            setState((s) => ({ ...s, screen: e.status === 'failed' ? 'processing' : 'new' }))
+            setState((s) => ({
+              ...s,
+              // Same rule: a job ending elsewhere in the app does not move you.
+              // On the processing screen, a cancel returns to the start and a
+              // failure stays put, because that is where the error text is.
+              screen:
+                s.screen === 'processing' && e.status === 'cancelled' ? 'new' : s.screen,
+            }))
             if (e.status === 'failed') say(e.error ?? 'That job failed.')
           }
         },
@@ -373,27 +412,11 @@ export function useSnipline() {
     [refreshJob, loadProjects, say],
   )
 
-  /**
-   * Resume watching after a reload: the job kept running server-side.
-   *
-   * Waits for the session instead of running on mount, because on mount the
-   * screen is always 'booting' and every call here needs a cookie. The ref keeps
-   * it to once per load now that it has real dependencies.
-   */
-  const resumed = useRef(false)
-  useEffect(() => {
-    if (!state.user || resumed.current) return
-    if (!state.jobId) return
-    if (state.screen !== 'processing' && state.screen !== 'results') return
-    resumed.current = true
-
-    void refreshJob(state.jobId).then((job) => {
-      if (job && ACTIVE.includes(job.status)) {
-        patch({ screen: 'processing' })
-        watchJob(job.id)
-      }
-    })
-  }, [state.user, state.jobId, state.screen, refreshJob, patch, watchJob])
+  // Resuming after a reload is handled by the boot sequence above, which asks
+  // the server for the running job instead of inferring one from the screen the
+  // user happened to leave. The screen-gated effect that used to live here never
+  // fired for a reload onto Projects or Settings, which is why an in-flight job
+  // became invisible the moment you navigated away from it.
 
   // Needs a session, so it waits for one rather than 401-ing on first paint.
   useEffect(() => {
@@ -504,7 +527,6 @@ export function useSnipline() {
     await auth.logout().catch(() => {
       // Already gone, or the API is down: clear the client either way.
     })
-    resumed.current = false
     patch({
       screen: 'login',
       user: null,
