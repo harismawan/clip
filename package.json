@@ -8,12 +8,12 @@
     "infra:up": "docker compose -f infra/docker-compose.yml --env-file .env up -d",
     "infra:down": "docker compose -f infra/docker-compose.yml --env-file .env down",
     "infra:logs": "docker compose -f infra/docker-compose.yml logs -f",
-    "db:migrate": "bun --cwd backend run db:migrate",
-    "dev:api": "bun --cwd backend run dev",
-    "dev:worker": "bun --cwd worker run dev",
-    "dev:web": "bun --cwd frontend run dev",
+    "db:migrate": "bun --cwd=backend run db:migrate",
+    "dev:api": "bun --cwd=backend run dev",
+    "dev:worker": "bun --cwd=worker run dev",
+    "dev:web": "bun --cwd=frontend run dev",
     "test": "bun test backend worker shared",
-    "typecheck": "bun --cwd backend x tsc --noEmit && bun --cwd worker x tsc --noEmit",
+    "typecheck": "bun x tsc -p backend/tsconfig.json --noEmit && bun x tsc -p worker/tsconfig.json --noEmit",
     "queue": "./scripts/queue-watch.sh"
   },
   "devDependencies": {
