@@ -1,46 +1,44 @@
 #!/usr/bin/env bash
 #
-# Full-stack deploy for diudara2: infra (Postgres + MediaMTX), backend API,
-# frontend bundle and the nginx site — in one command.
+# Full-stack deploy for clip: infra (Postgres + MinIO), API, worker, frontend
+# bundle and the nginx site — in one command.
 #
-# The three independent stages (infra / frontend build / backend install) run in
-# PARALLEL; everything after them is ordered by real dependencies:
+# The three independent stages run in PARALLEL; everything after them is
+# ordered by real dependencies:
 #
-#     infra up ──┐                    frontend build ──┐      backend install ──┐
-#                └─> wait for pg ──> db:migrate ──> pm2 reload api              │
-#                                         ^                                     │
-#                                         └─────────────────────────────────────┘
-#                    deploy web dist ──> nginx sync+reload ──> health checks
+#     infra up ──┐                 frontend build ──┐      bun install ──┐
+#                └─> wait for pg ──> db:migrate ──> pm2 restart api+worker
+#                                                        │
+#                    nginx sync+reload ──> publish web dist ──> health checks
 #
 # Deliberately NOT done here:
-#   * `db:seed`  — it truncates every table. Seeding is a one-off, by hand.
-#   * touching backend/.env or infra/.env — real secrets, placed once by hand.
-#   * `git pull` — you deploy the tree you are looking at, not a moving target.
+#   * touching .env — real secrets, placed once by hand
+#   * `git pull` — you deploy the tree you are looking at, not a moving target
+#   * creating the htpasswd file — a password belongs in your hands, not a script
 #
 # Usage: scripts/deploy.sh [options]   (run from anywhere)
 #   --skip-infra     don't touch docker compose
 #   --skip-web       don't build/publish the frontend
-#   --skip-api       don't install/migrate/restart the backend
+#   --skip-api       don't install/migrate/restart the API and worker
 #   --skip-nginx     don't sync the nginx site config
 #   --serial         run stages one at a time (easier to read when debugging)
 #   -h, --help       show this
+#
+# Optional: export DEPLOY_BASIC_AUTH='user:pass' to let the verify step probe
+# the site through nginx. Without it, verification only proves nginx is
+# demanding credentials, not what is behind them.
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# TWO HOSTNAMES, ONE APPLICATION. Both names serve the same bundle and the same
-# nginx location set; neither redirects to the other. They are deployed together,
-# in one run, so a bundle can never be live on one host and stale on the other.
-# Index i of SITES is published to index i of WEB_DIST_TARGETS.
-SITES=( "clip2.mhamzah.id" )
-WEB_DIST_TARGETS=( "/var/www/html/clip2/dist" )
-# The first is the canonical one for single-host checks and messages.
-NGINX_SITE="${SITES[0]}"
-NGINX_AVAILABLE="/etc/nginx/sites-available/$NGINX_SITE"
-API_PORT="$(grep -E '^PORT=' backend/.env 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)"
-API_PORT="${API_PORT:-3004}"
-PM2_APP="diudara-api"
+SITE="clip2.mhamzah.id"
+WEB_DIST_TARGET="/var/www/html/clip2/dist"
+NGINX_AVAILABLE="/etc/nginx/sites-available/$SITE"
+NGINX_REPO_CONF="$REPO_ROOT/deploy/nginx/$SITE"
+HTPASSWD="/etc/nginx/.htpasswd-clip"
+PM2_APPS=( "clip-api" "clip-worker" )
+ECOSYSTEM="$REPO_ROOT/ecosystem.config.cjs"
 
 DO_INFRA=1 DO_WEB=1 DO_API=1 DO_NGINX=1 PARALLEL=1
 for arg in "$@"; do
@@ -50,19 +48,24 @@ for arg in "$@"; do
     --skip-api)   DO_API=0 ;;
     --skip-nginx) DO_NGINX=0 ;;
     --serial)     PARALLEL=0 ;;
-    -h|--help)    sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)    sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
 
-LOG_DIR="$(mktemp -d /tmp/diudara-deploy.XXXXXX)"
+LOG_DIR="$(mktemp -d /tmp/clip-deploy.XXXXXX)"
 START_TS=$SECONDS
 trap 'rc=$?; [ $rc -ne 0 ] && echo "" && echo "DEPLOY FAILED (exit $rc). Logs kept in $LOG_DIR" >&2; exit $rc' EXIT
 
 say()  { printf "\n\033[1m==> %s\033[0m\n" "$*"; }
 info() { printf "    %s\n" "$*"; }
 ok()   { printf "    \033[32mok\033[0m %s\n" "$*"; }
+warn() { printf "    \033[33mwarn\033[0m %s\n" "$*"; }
 die()  { printf "\033[31mERROR:\033[0m %s\n" "$*" >&2; exit 1; }
+
+# Read one key from the root .env without sourcing it -- sourcing would execute
+# whatever is in there and leak every secret into this shell's environment.
+envval() { grep -E "^$1=" "$REPO_ROOT/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"'[:space:]'; }
 
 # ---------------------------------------------------------------- preflight
 # Fail before mutating anything, rather than half-deploying and stopping.
@@ -73,15 +76,79 @@ need bun; need docker; need curl
 [ "$DO_WEB"   = 1 ] && need rsync
 [ "$DO_NGINX" = 1 ] && need nginx
 
-[ "$DO_API" = 1 ] && [ ! -f backend/.env ] && die "backend/.env missing (copy backend/.env.example and fill it in)"
-[ "$DO_INFRA" = 1 ] && [ ! -f infra/.env ] && die "infra/.env missing (copy infra/.env.example and fill it in)"
+[ -f "$REPO_ROOT/.env" ] || die ".env missing (copy .env.example and fill it in)"
 
-# A deploy that leaves the API unreachable from nginx is worse than no deploy.
-if [ "$DO_NGINX" = 0 ] && [ -f "$NGINX_AVAILABLE" ] && ! grep -q "location ^~ /api/" "$NGINX_AVAILABLE"; then
-  info "WARNING: live nginx config has no '/api' block and --skip-nginx was passed."
-  info "         /api/* will fall through to the SPA and return HTML, not JSON."
+API_PORT="$(envval PORT)"; API_PORT="${API_PORT:-3004}"
+PUBLIC_API_URL="$(envval PUBLIC_API_URL)"
+API_TOKEN="$(envval API_TOKEN)"
+OPENROUTER_API_KEY="$(envval OPENROUTER_API_KEY)"
+
+[ -n "$API_TOKEN" ] || die "API_TOKEN is empty in .env"
+[ -n "$OPENROUTER_API_KEY" ] || die "OPENROUTER_API_KEY is empty in .env (range selection will fail after transcription)"
+
+# The worker is the half that does the work, and every one of these fails only
+# AFTER a multi-GB download if it is missing. Check them while it is free.
+if [ "$DO_API" = 1 ]; then
+  need ffmpeg; need ffprobe; need yt-dlp
+  [ -x "$REPO_ROOT/worker/.venv/bin/whisper-ctranslate2" ] \
+    || die "worker/.venv/bin/whisper-ctranslate2 missing — run scripts/setup-python.sh"
+  [ -f "$REPO_ROOT/worker/python/face_landmarker.task" ] \
+    || warn "face_landmarker.task missing — reframe will fall back to a static centre crop"
+  [ -f "$ECOSYSTEM" ] || die "missing $ECOSYSTEM"
 fi
-ok "tooling and env files present"
+
+# The port the vhost proxies to and the port the API binds must agree. Getting
+# this wrong is not a 502 -- 3004 on this box belongs to another application, so
+# the site would quietly serve someone else's API.
+if [ "$DO_NGINX" = 1 ] || [ "$DO_API" = 1 ]; then
+  CONF_PORT="$(grep -oE 'proxy_pass http://127\.0\.0\.1:[0-9]+' "$NGINX_REPO_CONF" | grep -oE '[0-9]+$' | sort -u)"
+  [ "$(echo "$CONF_PORT" | wc -l)" = 1 ] || die "$NGINX_REPO_CONF proxies to more than one port: $(echo "$CONF_PORT" | tr '\n' ' ')"
+  [ "$CONF_PORT" = "$API_PORT" ] || die "port mismatch: .env PORT=$API_PORT but $SITE proxies to $CONF_PORT"
+fi
+
+# Signed media URLs are built against PUBLIC_API_URL. Left at localhost, every
+# thumbnail and download link points at a host the visitor's browser cannot
+# reach -- and the signature is bound to it, so it cannot be rewritten later.
+if [ "$DO_API" = 1 ] && [ "$PUBLIC_API_URL" != "https://$SITE" ]; then
+  die "PUBLIC_API_URL is '$PUBLIC_API_URL'; for this deploy it must be https://$SITE"
+fi
+
+# DEV AND PROD SHARE THIS BOX, THIS PORT AND THIS .env.
+#
+# `bun run dev:api` binds the same PORT, so pm2 would crashloop on EADDRINUSE
+# and report "errored" a second after saying "online". Worse, a `bun run
+# dev:worker` left running would sit on the same pg-boss queue as the pm2
+# worker: whichever claims a job first wins, so half the jobs would run under
+# whatever code and environment that stale terminal happens to hold.
+if [ "$DO_API" = 1 ]; then
+  if ss -ltn 2>/dev/null | grep -qE "[:.]$API_PORT\b" && ! pm2 describe clip-api >/dev/null 2>&1; then
+    die "something already listens on :$API_PORT and it is not pm2's clip-api.
+       That is almost certainly 'bun run dev:api'. Stop the dev servers first."
+  fi
+  if pgrep -f 'cwd=worker|worker/src/index.ts' >/dev/null 2>&1 && ! pm2 describe clip-worker >/dev/null 2>&1; then
+    die "a worker is running outside pm2 (likely 'bun run dev:worker').
+       Two workers share one queue and race for jobs. Stop it first."
+  fi
+fi
+
+# Without the password file nginx fails every request with 500, so the site is
+# down rather than merely unprotected. Refuse before reloading nginx.
+if [ "$DO_NGINX" = 1 ] && [ ! -f "$HTPASSWD" ]; then
+  die "$HTPASSWD missing. The bundle ships API_TOKEN, so basic auth is the real gate. Create it:
+       printf 'clip:%s\n' \"\$(openssl passwd -6)\" | sudo tee $HTPASSWD >/dev/null
+       sudo chown root:www-data $HTPASSWD && sudo chmod 640 $HTPASSWD"
+fi
+
+# Existing is not the same as readable. nginx workers run as www-data, and a
+# root-only password file answers every request with 500 -- which reads as "the
+# app is broken", not "the file has the wrong group".
+if [ "$DO_NGINX" = 1 ] && [ -f "$HTPASSWD" ]; then
+  if ! sudo -u www-data test -r "$HTPASSWD" 2>/dev/null; then
+    warn "www-data cannot read $HTPASSWD — nginx will answer 500. Fix with:"
+    warn "  sudo chown root:www-data $HTPASSWD && sudo chmod 640 $HTPASSWD"
+  fi
+fi
+ok "tooling, env and ports consistent (API :$API_PORT)"
 
 # ------------------------------------------------------------ stage runners
 declare -A JOB_PID
@@ -110,33 +177,39 @@ await_stage() { # name
 }
 
 # ------------------------------------------------------------------- stages
-# Every `cd` below is wrapped in a subshell. In --serial mode the stage
-# functions run in THIS shell, so a bare `cd` would leak into the main flow and
-# make later relative paths resolve from the wrong directory.
+# Every `cd` is wrapped in a subshell: in --serial mode these run in THIS shell,
+# so a bare `cd` would leak and make later relative paths resolve elsewhere.
 stage_infra() {
-  ( cd "$REPO_ROOT/infra" && docker compose up -d )
+  # --env-file is not optional: infra/docker-compose.yml reads ports and
+  # credentials from the root .env, and without it the containers come up with
+  # defaults that do not match what the API and worker connect to.
+  ( cd "$REPO_ROOT" && docker compose -f infra/docker-compose.yml --env-file .env up -d )
 }
 
 stage_web_build() {
   (
     cd "$REPO_ROOT/frontend"
     bun install --frozen-lockfile 2>/dev/null || bun install
-    # VITE_API_URL is intentionally unset: in production the SPA and API share an
-    # origin, so the client's default of "/api" is what we want.
-    bun run build
+    # VITE_API_URL stays unset on purpose: in production the SPA and API share
+    # an origin, and the client's default of a bare "/api" is what we want.
+    # VITE_API_TOKEN is baked into the bundle -- see the auth_basic comment in
+    # the vhost for why that is survivable here and not on its own.
+    VITE_API_TOKEN="$API_TOKEN" bun run build
     [ -f dist/index.html ] || { echo "build produced no dist/index.html"; exit 1; }
   )
 }
 
-stage_api_install() {
-  ( cd "$REPO_ROOT/backend" && { bun install --frozen-lockfile 2>/dev/null || bun install; } )
+stage_deps() {
+  # One install at the root covers every workspace (shared, backend, worker).
+  ( cd "$REPO_ROOT" && { bun install --frozen-lockfile 2>/dev/null || bun install; } )
 }
 
 wait_for_postgres() {
   local tries=60
   # `docker compose up -d` returns as soon as the container starts, which is
   # well before Postgres accepts connections. Migrating into that gap fails.
-  until docker compose -f "$REPO_ROOT/infra/docker-compose.yml" exec -T postgres pg_isready -q 2>/dev/null; do
+  until docker compose -f "$REPO_ROOT/infra/docker-compose.yml" --env-file "$REPO_ROOT/.env" \
+        exec -T postgres pg_isready -q 2>/dev/null; do
     tries=$((tries - 1))
     [ "$tries" -gt 0 ] || die "postgres did not become ready in 60s"
     sleep 1
@@ -144,82 +217,60 @@ wait_for_postgres() {
 }
 
 publish_web() {
-  local target
-  for target in "${WEB_DIST_TARGETS[@]}"; do
-    sudo mkdir -p "$target"
-    # rsync --delete instead of `rm -rf` + `cp`: files are replaced in place, so
-    # there is no window where the document root is empty and the site 404s.
-    sudo rsync -a --delete "$REPO_ROOT/frontend/dist/" "$target/"
-    sudo chown -R "$(id -un):www-data" "$(dirname "$target")"
-    info "published -> $target"
-  done
+  sudo mkdir -p "$WEB_DIST_TARGET"
+  # rsync --delete rather than rm -rf + cp: files are replaced in place, so
+  # there is no window where the document root is empty and the site 404s.
+  sudo rsync -a --delete "$REPO_ROOT/frontend/dist/" "$WEB_DIST_TARGET/"
+  sudo chown -R "$(id -un):www-data" "$(dirname "$WEB_DIST_TARGET")"
+  info "published -> $WEB_DIST_TARGET"
 }
 
 sync_nginx() {
-  # All sites are staged first, then ONE `nginx -t`, then one reload. Testing
-  # after each file would reload a half-updated pair, and `nginx -t` validates the
-  # whole server config anyway — a bad file here would take down the other sites
-  # on this box, so a failure restores every backup before anything is reloaded.
-  local -a backups=() changed=()
-  local site available repo_conf backup
+  # A bad file here takes down every other site on this box, so the config is
+  # staged, tested once, and restored on failure before anything is reloaded.
+  local backup=""
 
-  for site in "${SITES[@]}"; do
-    repo_conf="$REPO_ROOT/deploy/nginx/$site"
-    available="/etc/nginx/sites-available/$site"
-    [ -f "$repo_conf" ] || die "missing $repo_conf"
+  [ -f "$NGINX_REPO_CONF" ] || die "missing $NGINX_REPO_CONF"
 
-    if [ -f "$available" ] && sudo cmp -s "$repo_conf" "$available"; then
-      info "nginx config already current: $site"
-      continue
-    fi
-
-    backup=""
-    if [ -f "$available" ]; then
-      backup="$available.bak.$(date +%Y%m%d-%H%M%S)"
-      sudo cp -a "$available" "$backup"
-      info "backed up live config -> $backup"
-    fi
-    backups+=( "$backup" )
-    changed+=( "$site" )
-
-    sudo cp "$repo_conf" "$available"
-    sudo ln -sfn "$available" "/etc/nginx/sites-enabled/$site"
-  done
-
-  if [ ${#changed[@]} -eq 0 ]; then
-    info "all nginx configs already current"
+  if [ -f "$NGINX_AVAILABLE" ] && sudo cmp -s "$NGINX_REPO_CONF" "$NGINX_AVAILABLE"; then
+    info "nginx config already current"
     return 0
   fi
 
+  if [ -f "$NGINX_AVAILABLE" ]; then
+    backup="$NGINX_AVAILABLE.bak.$(date +%Y%m%d-%H%M%S)"
+    sudo cp -a "$NGINX_AVAILABLE" "$backup"
+    info "backed up live config -> $backup"
+  fi
+
+  sudo cp "$NGINX_REPO_CONF" "$NGINX_AVAILABLE"
+  sudo ln -sfn "$NGINX_AVAILABLE" "/etc/nginx/sites-enabled/$SITE"
+
   if ! sudo nginx -t 2>"$LOG_DIR/nginx-t.log"; then
-    local i
-    for i in "${!changed[@]}"; do
-      available="/etc/nginx/sites-available/${changed[$i]}"
-      if [ -n "${backups[$i]}" ]; then
-        sudo cp -a "${backups[$i]}" "$available"
-      else
-        sudo rm -f "$available" "/etc/nginx/sites-enabled/${changed[$i]}"
-      fi
-    done
-    info "nginx -t failed; restored previous config for: ${changed[*]}"
+    if [ -n "$backup" ]; then
+      sudo cp -a "$backup" "$NGINX_AVAILABLE"
+    else
+      sudo rm -f "$NGINX_AVAILABLE" "/etc/nginx/sites-enabled/$SITE"
+    fi
+    info "nginx -t failed; previous config restored"
     cat "$LOG_DIR/nginx-t.log" >&2
     die "nginx config rejected (see above); nothing was reloaded"
   fi
 
   # reload, not restart: other sites on this host keep serving.
   sudo systemctl reload nginx 2>/dev/null || sudo nginx -s reload
-  info "nginx reloaded (${changed[*]})"
+  info "nginx reloaded"
 }
 
 # ---------------------------------------------------------------- run it
-say "building (parallel stages: infra, web, api deps)"
-[ "$DO_INFRA" = 1 ] && start_stage infra       stage_infra
-[ "$DO_WEB"   = 1 ] && start_stage web-build   stage_web_build
-[ "$DO_API"   = 1 ] && start_stage api-install stage_api_install
+say "building (parallel stages: infra, web, deps)"
+[ "$DO_INFRA" = 1 ] && start_stage infra     stage_infra
+[ "$DO_WEB"   = 1 ] && start_stage web-build stage_web_build
+[ "$DO_API"   = 1 ] && start_stage deps      stage_deps
 
 [ "$DO_INFRA" = 1 ] && await_stage infra
 [ "$DO_WEB"   = 1 ] && await_stage web-build
-[ "$DO_API"   = 1 ] && await_stage api-install
+[ "$DO_API"   = 1 ] && await_stage deps
 
 if [ "$DO_API" = 1 ]; then
   say "database: waiting for postgres, then migrating"
@@ -229,25 +280,22 @@ if [ "$DO_API" = 1 ]; then
   ok "migrations applied"
 fi
 
-# Cutover order matters, and it is api -> nginx -> web, not the other way round.
-# The new frontend calls /api on this same origin, so it must go live LAST, once
-# the API is serving and nginx has a route to it. Publishing the bundle first
-# would leave the site briefly requesting /api through an nginx that answers
-# with index.html. Adding the /api block while the OLD frontend is still live is
-# harmless, because the old bundle never calls it.
+# Cutover order is api -> nginx -> web, not the other way round. The new bundle
+# calls /api on this same origin, so it goes live LAST, once the API is serving
+# and nginx has a route to it. Adding the /api block while the old bundle is
+# still published is harmless.
 if [ "$DO_API" = 1 ]; then
-  say "api: (re)starting '$PM2_APP' on :$API_PORT"
-  # startOrReload against the ecosystem file touches ONLY diudara-api. Never use
-  # `pm2 restart all` here: this box also runs unrelated apps under pm2.
-  # delete-then-start, not startOrReload: pm2 keeps the exec_mode/interpreter an
-  # app was first created with, so a reload would silently ignore changes to
-  # ecosystem.config.cjs. Single-instance fork mode restarts on reload anyway, so
-  # this costs no extra downtime. Scoped to $PM2_APP by name — never `pm2
-  # restart all`, this box also runs unrelated apps under pm2.
-  pm2 delete "$PM2_APP" >/dev/null 2>&1 || true
-  ( cd "$REPO_ROOT/backend" && pm2 start ecosystem.config.cjs --update-env ) | sed 's/^/    /'
+  say "api + worker: (re)starting ${PM2_APPS[*]}"
+  # delete-then-start, scoped BY NAME: pm2 keeps the exec_mode and interpreter
+  # an app was created with, so a reload would silently ignore changes to
+  # ecosystem.config.cjs. Never `pm2 restart all` -- this box runs unrelated
+  # apps (diudara-api, task-api, planner-backend and others) under the same pm2.
+  for app in "${PM2_APPS[@]}"; do
+    pm2 delete "$app" >/dev/null 2>&1 || true
+  done
+  ( cd "$REPO_ROOT" && pm2 start "$ECOSYSTEM" --update-env ) | sed 's/^/    /'
   pm2 save >/dev/null 2>&1 || true
-  ok "api reloaded"
+  ok "api and worker started"
 fi
 
 if [ "$DO_NGINX" = 1 ]; then
@@ -257,7 +305,7 @@ if [ "$DO_NGINX" = 1 ]; then
 fi
 
 if [ "$DO_WEB" = 1 ]; then
-  say "publishing frontend -> ${WEB_DIST_TARGETS[*]}"
+  say "publishing frontend -> $WEB_DIST_TARGET"
   publish_web
   ok "web bundle published"
 fi
@@ -269,46 +317,49 @@ FAILED=0
 check() { # label, expected, actual
   if [ "$2" = "$3" ]; then ok "$1 ($3)"; else printf "    \033[31mFAIL\033[0m %s (want %s, got %s)\n" "$1" "$2" "$3"; FAILED=1; fi
 }
-# curl already prints "000" via -w when it cannot connect, so `|| true` (not
-# `|| echo 000`, which would concatenate a second one) is what we want here.
-http_code() { local c; c="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$1" 2>/dev/null || true)"; echo "${c:-000}"; }
+http_code() { local c; c="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$@" 2>/dev/null || true)"; echo "${c:-000}"; }
 
 if [ "$DO_API" = 1 ]; then
-  # Poll rather than sleep-once: pm2 reports "online" the instant it forks, well
-  # before the process has bound the port — and it reports "online" for a process
-  # that is crashing on startup, too. Only /health proves the API is serving.
+  # Poll rather than sleep once: pm2 reports "online" the instant it forks, well
+  # before the process has bound the port — and it reports "online" for a
+  # process that is crashlooping, too. Only /api/health proves it is serving.
   api_code=000
   for _ in $(seq 1 15); do
-    api_code="$(http_code "http://127.0.0.1:$API_PORT/health")"
+    api_code="$(http_code "http://127.0.0.1:$API_PORT/api/health")"
     [ "$api_code" = 200 ] && break
     sleep 1
   done
-  check "api /health (direct :$API_PORT)" 200 "$api_code"
+  check "api /api/health (direct :$API_PORT)" 200 "$api_code"
+
+  # The API answering says nothing about the worker, which is a separate process
+  # with its own way to fail (venv, ffmpeg, DB). pm2 is the only signal we have
+  # without enqueuing a real job.
+  worker_status="$(pm2 jlist 2>/dev/null | grep -o '"name":"clip-worker".*' | grep -o '"status":"[a-z]*"' | head -1 | cut -d'"' -f4)"
+  check "worker process" "online" "${worker_status:-missing}"
 fi
 
 if [ "$DO_NGINX" = 1 ] || [ "$DO_WEB" = 1 ]; then
-  # EVERY hostname is verified, not just the first. Two names serving one app fail
-  # independently — a missing block or an unpublished bundle on the second host is
-  # exactly the kind of thing nobody notices until someone uses that URL.
-  for site in "${SITES[@]}"; do
-    check "$site / (through nginx)" 200 "$(http_code "https://$site/")"
-    # The one that actually proves the /api proxy block works: this must be JSON
-    # from the API, not the SPA's index.html.
-    api_probe="$(curl -s -o /dev/null -w '%{http_code} %{content_type}' --max-time 10 "https://$site/api/communities" || echo "000 none")"
+  # 401 is the PASS here: it proves nginx is serving this vhost and that the
+  # gate is closed. A 200 without credentials would mean the site is wide open.
+  check "$SITE / demands auth" 401 "$(http_code "https://$SITE/")"
+
+  if [ -n "${DEPLOY_BASIC_AUTH:-}" ]; then
+    check "$SITE / (authenticated)" 200 "$(http_code -u "$DEPLOY_BASIC_AUTH" "https://$SITE/")"
+    # The one that proves the /api proxy block works: this must be JSON from the
+    # API, not the SPA's index.html.
+    api_probe="$(curl -s -u "$DEPLOY_BASIC_AUTH" -o /dev/null -w '%{http_code} %{content_type}' --max-time 10 "https://$SITE/api/health" || echo "000 none")"
     case "$api_probe" in
-      *application/json*) ok "$site api via nginx (/api -> JSON)" ;;
-      502*) printf "    \033[31mFAIL\033[0m %s api via nginx: 502 — nginx routes /api correctly but the API is not answering on :%s (check \`pm2 logs %s\`)\n" "$site" "$API_PORT" "$PM2_APP"; FAILED=1 ;;
-      *) printf "    \033[31mFAIL\033[0m %s api via nginx returned '%s' — /api is falling through to the SPA\n" "$site" "$api_probe"; FAILED=1 ;;
+      200*application/json*) ok "$SITE /api via nginx (JSON)" ;;
+      502*) printf "    \033[31mFAIL\033[0m %s /api: 502 — nginx routes correctly but the API is not answering on :%s (pm2 logs clip-api)\n" "$SITE" "$API_PORT"; FAILED=1 ;;
+      *) printf "    \033[31mFAIL\033[0m %s /api returned '%s' — falling through to the SPA\n" "$SITE" "$api_probe"; FAILED=1 ;;
     esac
-    # Live playback: this must reach MediaMTX (302 to its cookie check), never the
-    # SPA fallback, which would hand the player HTML where it expects a playlist.
-    hls_probe="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://$site/hls/c/deploycheck/index.m3u8" || echo 000)"
-    check "$site /hls -> MediaMTX" 302 "$hls_probe"
-  done
+  else
+    info "set DEPLOY_BASIC_AUTH='user:pass' to also verify /api through nginx"
+  fi
 fi
 
 say "done in $((SECONDS - START_TS))s"
-pm2 list 2>/dev/null | grep -E "name|$PM2_APP" || true
+pm2 list 2>/dev/null | grep -E "name|clip-api|clip-worker" || true
 
 if [ "$FAILED" -ne 0 ]; then
   echo ""
