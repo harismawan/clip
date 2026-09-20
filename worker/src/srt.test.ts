@@ -1,5 +1,5 @@
 import { test, expect, describe } from 'bun:test'
-import { srtTime, buildClipSrt, wrapLines, wrapHookLine, subtitleStyle } from './srt.ts'
+import { srtTime, buildClipSrt, wrapLines, wrapHookLine } from './srt.ts'
 import type { TranscriptSegment } from '../../shared/schema.ts'
 
 const segments: TranscriptSegment[] = [
@@ -85,18 +85,5 @@ describe('wrapHookLine', () => {
 
   test('collapses runs of whitespace', () => {
     expect(wrapHookLine('a    b')).toBe('a b')
-  })
-})
-
-describe('subtitleStyle', () => {
-  test('scales with output height so text is legible at any ratio', () => {
-    const tall = subtitleStyle(1920)
-    const square = subtitleStyle(1080)
-    const size = (s: string) => Number(s.match(/FontSize=(\d+)/)![1])
-    expect(size(tall)).toBeGreaterThan(size(square))
-  })
-
-  test('has an outline, since white text on bright video is unreadable', () => {
-    expect(subtitleStyle(1920)).toMatch(/Outline=[1-9]/)
   })
 })

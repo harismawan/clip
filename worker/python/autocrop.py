@@ -258,8 +258,8 @@ def render(path, out_path, centers_frac, analysis_fps, src_w, src_h,
     else:
         x0 = (src_w - crop_w) // 2
 
-    # Subtitles are burned AFTER the scale: ASS font sizes are in output pixels,
-    # so styling the larger pre-scale frame would shrink the text with it.
+    # Subtitles are burned AFTER the scale: the ASS file declares PlayRes equal
+    # to the output size, so burning before the scale would resize text with it.
     # Doing it here rather than in a second ffmpeg pass avoids a whole extra
     # re-encode (double the render time, one generation of quality) just to add text.
     sub_filter = ""

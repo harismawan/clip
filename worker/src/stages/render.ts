@@ -15,7 +15,7 @@ import { RATIO_DIMS } from '../../../shared/types.ts'
 import type { Ratio } from '../../../shared/types.ts'
 import type { TranscriptSegment, Clip } from '../../../shared/schema.ts'
 import { cutAccurate, thumbnail, reframeStatic, probeDimensions } from '../ffmpeg.ts'
-import { buildClipSrt, subtitleStyle } from '../srt.ts'
+import { buildClipAss } from '../ass.ts'
 
 const AUTOCROP = new URL('../../python/autocrop.py', import.meta.url).pathname
 
@@ -60,14 +60,9 @@ export async function renderClip(opts: RenderClipOptions): Promise<void> {
   // point of the clip.
   await cutAccurate(opts.sourcePath, cutPath, clip.startSeconds, duration)
 
-  let srtPath: string | undefined
-  if (opts.burnSubtitles) {
-    const srt = buildClipSrt(opts.segments, clip.startSeconds, clip.endSeconds)
-    if (srt.trim()) {
-      srtPath = join(workDir, `${stem}.srt`)
-      await writeFile(srtPath, srt, 'utf8')
-    }
-  }
+  // One subtitle file per ratio, not per clip: the ASS header declares the
+  // output resolution, which is what keeps font sizes in output pixels.
+  const subPaths: string[] = []
 
   const useAutocrop = await autocropAvailable()
   let anySucceeded = false
@@ -83,18 +78,34 @@ export async function renderClip(opts: RenderClipOptions): Promise<void> {
       .returning()
 
     try {
+      let subPath: string | undefined
+      if (opts.burnSubtitles) {
+        const ass = buildClipAss(
+          opts.segments,
+          clip.startSeconds,
+          clip.endSeconds,
+          dims.w,
+          dims.h,
+        )
+        if (ass) {
+          subPath = join(workDir, `${stem}-${ratio.replace(':', 'x')}.ass`)
+          await writeFile(subPath, ass, 'utf8')
+          subPaths.push(subPath)
+        }
+      }
+
       if (useAutocrop) {
         try {
-          await runAutocrop(cutPath, outPath, dims, srtPath)
+          await runAutocrop(cutPath, outPath, dims, subPath)
         } catch (e) {
           console.warn(
             `[render] autocrop failed for clip ${clip.idx} ${ratio}, ` +
               `using centre crop: ${(e as Error).message}`,
           )
-          await reframeStatic(cutPath, outPath, dims.w, dims.h, srtPath, subtitleStyle(dims.h))
+          await reframeStatic(cutPath, outPath, dims.w, dims.h, subPath)
         }
       } else {
-        await reframeStatic(cutPath, outPath, dims.w, dims.h, srtPath, subtitleStyle(dims.h))
+        await reframeStatic(cutPath, outPath, dims.w, dims.h, subPath)
       }
 
       await thumbnail(outPath, thumbPath, Math.min(1, duration / 2))
@@ -142,7 +153,7 @@ export async function renderClip(opts: RenderClipOptions): Promise<void> {
 
   await Promise.all([
     unlink(cutPath).catch(() => {}),
-    srtPath ? unlink(srtPath).catch(() => {}) : Promise.resolve(),
+    ...subPaths.map((p) => unlink(p).catch(() => {})),
   ])
 
   await db
@@ -177,8 +188,10 @@ async function runAutocrop(
     '--out-h',
     String(dims.h),
   ]
+  // No --sub-style: the ASS file carries its own styling, declared against the
+  // output resolution. A force_style here would be read in PlayRes space.
   if (subtitlePath) {
-    args.push('--subtitles', subtitlePath, '--sub-style', subtitleStyle(dims.h))
+    args.push('--subtitles', subtitlePath)
   }
 
   // MediaPipe on 4 cores handles a 90s clip well inside this; the timeout is a

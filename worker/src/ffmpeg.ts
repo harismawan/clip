@@ -193,7 +193,6 @@ export async function reframeStatic(
   outW: number,
   outH: number,
   subtitlePath?: string,
-  subtitleStyleStr?: string,
 ): Promise<string> {
   const { width, height } = await probeDimensions(input)
 
@@ -212,9 +211,9 @@ export async function reframeStatic(
   const y = Math.max(0, Math.round((height - cropH) / 2))
 
   const chain = [`crop=${cropW}:${cropH}:${x}:${y}`, `scale=${outW}:${outH}`]
-  // Subtitles go AFTER scale: font sizes are in output pixels, so styling a
-  // larger frame and then downscaling would shrink the text with it.
-  if (subtitlePath) chain.push(subtitleFilter(subtitlePath, subtitleStyleStr))
+  // Subtitles go AFTER scale: the ASS declares PlayRes equal to the output
+  // size, so burning before the scale would resize the text along with it.
+  if (subtitlePath) chain.push(subtitleFilter(subtitlePath))
   chain.push('setsar=1')
 
   await run([
@@ -258,10 +257,9 @@ export async function reframeStatic(
  * path containing any of them silently produces a broken graph rather than an
  * error. Escaping is mandatory, not defensive.
  */
-export function subtitleFilter(path: string, style?: string): string {
+export function subtitleFilter(path: string): string {
   const escaped = path.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'")
-  const styleArg = style ? `:force_style='${style}'` : ''
-  return `subtitles='${escaped}'${styleArg}`
+  return `subtitles='${escaped}'`
 }
 
 /** "frame= 123 fps=... time=00:01:23.45 ..." -> seconds, or null. */

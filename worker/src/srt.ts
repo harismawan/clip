@@ -94,29 +94,3 @@ export function wrapLines(text: string, maxChars: number, maxLines: number): str
 export function wrapHookLine(text: string, maxChars = 24): string {
   return wrapLines(text.replace(/\s+/g, ' ').trim(), maxChars, 2).join('\n')
 }
-
-/**
- * ASS style for ffmpeg's `subtitles` filter.
- *
- * Sizes are in output pixels, so this must be applied AFTER the scale filter --
- * styling a 1920-wide frame then downscaling would shrink the text with it.
- */
-export function subtitleStyle(outHeight: number): string {
-  // ~4.5% of frame height reads correctly on a phone without dominating it.
-  const fontSize = Math.round(outHeight * 0.045)
-  const outline = Math.max(2, Math.round(fontSize * 0.12))
-  const marginV = Math.round(outHeight * 0.12)
-
-  return [
-    `FontName=DejaVu Sans`,
-    `FontSize=${fontSize}`,
-    `PrimaryColour=&H00FFFFFF`,
-    `OutlineColour=&H00000000`,
-    `BorderStyle=1`,
-    `Outline=${outline}`,
-    `Shadow=0`,
-    `Bold=1`,
-    `Alignment=2`, // bottom-centre
-    `MarginV=${marginV}`,
-  ].join(',')
-}
