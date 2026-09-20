@@ -4,7 +4,14 @@
  */
 import type { Clip, Project, Ratio, Source, JobStatus } from '../types'
 
-const BASE: string = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '')
+/**
+ * Every path here is relative, and there is deliberately no configurable base
+ * URL. The SPA and API share an origin in production (nginx) and in development
+ * (Vite proxies /api), and the session cookie only travels same-origin anyway --
+ * so an absolute base could never be right, only wrong. A VITE_API_URL in a
+ * stray .env.local once baked http://localhost:3014 into a production build and
+ * sent sign-in to the visitor's own machine.
+ */
 
 /** Thrown for any non-2xx response, carrying the server's own message. */
 export class ApiError extends Error {
@@ -20,7 +27,7 @@ export class ApiError extends Error {
 async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   let res: Response
   try {
-    res = await fetch(`${BASE}/api${path}`, {
+    res = await fetch(`/api${path}`, {
       ...init,
       headers: {
         'Content-Type': 'application/json',
@@ -94,7 +101,7 @@ export const auth = {
 
   /** Leaves the SPA entirely: Google's consent screen is not an XHR. */
   signInWithGoogle(): void {
-    window.location.href = `${BASE}/api/auth/google`
+    window.location.href = '/api/auth/google'
   },
 
   logout: () => call<void>('/auth/logout', { method: 'POST' }),
@@ -137,7 +144,7 @@ export const api = {
     onEvent: (e: ProgressEvent) => void,
     onError?: () => void,
   ): () => void {
-    const es = new EventSource(`${BASE}/api/jobs/${jobId}/events`)
+    const es = new EventSource(`/api/jobs/${jobId}/events`)
 
     es.onmessage = (msg) => {
       if (!msg.data) return // keep-alive ping
@@ -168,7 +175,7 @@ export const api = {
       return
     }
 
-    const res = await fetch(`${BASE}/api/downloads`, {
+    const res = await fetch('/api/downloads', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',

@@ -189,6 +189,20 @@ stage_web_build() {
     # which is exactly why it could never be the gate.
     bun run build
     [ -f dist/index.html ] || { echo "build produced no dist/index.html"; exit 1; }
+
+    # A bundle that names localhost is a bundle built with a dev .env.
+    #
+    # frontend/.env.local once set VITE_API_URL=http://localhost:3014, and Vite
+    # loads .env.local in EVERY mode -- so the production build pointed every API
+    # call, and the sign-in redirect, at the visitor's own machine. The client has
+    # no configurable base URL any more, and this makes the mistake impossible to
+    # ship rather than merely unlikely.
+    if grep -rqE 'https?://(localhost|127\.0\.0\.1)' dist/assets/*.js; then
+      echo "build references localhost -- a dev .env leaked into it:"
+      grep -rhoE 'https?://(localhost|127\.0\.0\.1)[:0-9]*' dist/assets/*.js | sort -u
+      echo "remove frontend/.env.local (and any VITE_API_URL) and rebuild"
+      exit 1
+    fi
   )
 }
 
