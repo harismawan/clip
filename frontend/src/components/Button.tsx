@@ -10,10 +10,20 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
    * available, then fill with violet. Ignored by the other variants.
    */
   armed?: boolean
+  /**
+   * The action behind this button is in flight: shows a spinner and stops
+   * further clicks.
+   *
+   * Disabling is the point as much as the spinner is. "Get clips" and "Download
+   * & make N clips" used to stay live through their whole round trip, so a
+   * double-click ran the analysis twice or created two jobs -- and jobs are
+   * quota'd, so that cost the user one of three for the day.
+   */
+  loading?: boolean
 }
 
 const base =
-  'inline-flex items-center justify-center rounded-full border-[1.5px] font-sans whitespace-nowrap cursor-pointer transition-colors'
+  'inline-flex items-center justify-center rounded-full border-[1.5px] font-sans whitespace-nowrap cursor-pointer transition-colors disabled:cursor-not-allowed'
 
 const variants: Record<Variant, string> = {
   primary: 'border-ink shadow-stamp font-semibold',
@@ -26,13 +36,21 @@ const variants: Record<Variant, string> = {
 export function Button({
   variant = 'primary',
   armed = true,
+  loading = false,
   className,
   type = 'button',
+  disabled,
+  children,
   ...rest
 }: ButtonProps) {
   return (
     <button
       type={type}
+      // A spinner alone leaves the control clickable, which is how duplicate
+      // jobs got created. Loading implies disabled.
+      disabled={disabled || loading}
+      // Announces the wait to a screen reader, which cannot see the spinner.
+      aria-busy={loading || undefined}
       className={cn(
         base,
         variants[variant],
@@ -40,9 +58,28 @@ export function Button({
           (armed
             ? 'bg-violet text-white hover:bg-violet-deep'
             : 'bg-sand-deep text-[rgba(23,20,18,.9)]'),
+        // Only dim for a plain disabled state: a loading button already reads as
+        // busy from the spinner, and fading it too makes the label hard to read.
+        disabled && !loading && 'opacity-55',
         className,
       )}
       {...rest}
+    >
+      {loading && <Spinner />}
+      {children}
+    </button>
+  )
+}
+
+/**
+ * A ring that spins in the button's own text colour, so it works on every
+ * variant including onDark. Tailwind's animate-spin needs no extra CSS.
+ */
+function Spinner() {
+  return (
+    <span
+      aria-hidden="true"
+      className="mr-2 block size-3.5 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent opacity-70"
     />
   )
 }

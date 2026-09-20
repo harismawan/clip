@@ -44,7 +44,7 @@ function GoogleMark() {
 }
 
 export function LoginScreen() {
-  const { signIn } = useApp()
+  const { state, signIn } = useApp()
 
   // The callback redirects here with ?error=<code> rather than rendering JSON,
   // because the browser arrives by top-level navigation.
@@ -75,8 +75,16 @@ export function LoginScreen() {
             </p>
           )}
 
-          <Button onClick={signIn} className="h-[46px] gap-2.5 text-[14px]">
-            <GoogleMark />
+          {/*
+            Stays busy until the browser actually leaves for Google, which on a
+            slow connection is long enough to click twice.
+          */}
+          <Button
+            onClick={signIn}
+            loading={state.pending === 'signIn'}
+            className="h-[46px] gap-2.5 text-[14px]"
+          >
+            {state.pending === 'signIn' ? null : <GoogleMark />}
             Continue with Google
           </Button>
 

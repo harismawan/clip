@@ -57,9 +57,10 @@ export function ResultsScreen() {
         <Button
           variant="quiet"
           onClick={regenerateAll}
+          loading={state.pending === 'regenerateAll'}
           className="h-9 flex-none px-3.5 text-[12.5px]"
         >
-          Regenerate all
+          {state.pending === 'regenerateAll' ? 'Requeueing…' : 'Regenerate all'}
         </Button>
       </div>
 
@@ -191,8 +192,23 @@ export function ResultsScreen() {
           <Button variant="outline" onClick={toggleSelectAll} className="h-10 px-4 text-[13px]">
             {allSelected ? 'Clear selection' : 'Select all'}
           </Button>
-          <Button armed={selected > 0} onClick={download} className="h-10 px-5 text-[13px]">
-            {selected ? `Download ${selected} ${selected === 1 ? 'clip' : 'clips'}` : 'Download'}
+          {/*
+            A zip of 24 clips outlives the 2.6s toast by a long way, so the
+            button carries the wait rather than the toast.
+          */}
+          <Button
+            armed={selected > 0}
+            onClick={download}
+            loading={state.pending === 'download'}
+            className="h-10 px-5 text-[13px]"
+          >
+            {state.pending === 'download'
+              ? selected > 1
+                ? 'Zipping…'
+                : 'Preparing…'
+              : selected
+                ? `Download ${selected} ${selected === 1 ? 'clip' : 'clips'}`
+                : 'Download'}
           </Button>
         </div>
       </div>

@@ -97,8 +97,13 @@ export function ProcessingScreen() {
       </div>
 
       <div className="mt-auto flex flex-wrap items-center gap-4 pt-6">
-        <Button variant="outline" onClick={cancelJob} className="h-10 px-[18px] text-[13px]">
-          Cancel job
+        <Button
+          variant="outline"
+          onClick={cancelJob}
+          loading={state.pending === 'cancelJob'}
+          className="h-10 px-[18px] text-[13px]"
+        >
+          {state.pending === 'cancelJob' ? 'Cancelling…' : 'Cancel job'}
         </Button>
         {state.jobDone && (
           <Button onClick={goResults} className="h-10 px-5 text-[13px]">

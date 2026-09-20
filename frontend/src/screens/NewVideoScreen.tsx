@@ -3,6 +3,9 @@ import { useApp } from '../state/AppContext'
 
 export function NewVideoScreen() {
   const { state, setUrl, analyze, loadSample } = useApp()
+  const busy = state.pending === 'analyze'
+  // Armed on a non-empty URL; the button still disables itself while analysing,
+  // which is what stops a second submit resolving the same link twice.
   const armed = state.url.trim().length > 0
 
   return (
@@ -36,8 +39,13 @@ export function NewVideoScreen() {
           placeholder="Paste a video URL"
           className="h-[50px] flex-1 rounded-full border-2 border-ink bg-white px-[18px] text-[14px] text-ink outline-none focus:border-violet"
         />
-        <Button type="submit" armed={armed} className="h-[50px] px-6 text-[14px]">
-          Get clips
+        <Button
+          type="submit"
+          armed={armed}
+          loading={busy}
+          className="h-[50px] px-6 text-[14px]"
+        >
+          {busy ? 'Reading the link…' : 'Get clips'}
         </Button>
       </form>
 

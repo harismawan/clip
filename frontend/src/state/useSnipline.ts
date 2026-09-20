@@ -20,6 +20,24 @@ const ACTIVE: readonly JobStatus[] = [
   'rendering',
 ]
 
+/**
+ * The action currently in flight, or null.
+ *
+ * A key rather than a boolean so two async buttons on one screen do not spin
+ * together. `openProject` carries its row's id (`openProject:<uuid>`) because the
+ * projects list renders one button per project.
+ */
+export type Pending =
+  | null
+  | 'analyze'
+  | 'startJob'
+  | 'cancelJob'
+  | 'regenerateAll'
+  | 'download'
+  | 'signIn'
+  | 'signOut'
+  | `openProject:${string}`
+
 export interface SnipState {
   screen: Screen
   /** Who is signed in. Null until /api/auth/me answers, and after a logout. */
@@ -38,8 +56,12 @@ export interface SnipState {
   stage: string | null
   jobStatus: JobStatus | null
   jobError: string | null
-  /** True while an API call the user is waiting on is in flight. */
-  busy: boolean
+  /**
+   * Which action is in flight, as a key the buttons compare against -- not a
+   * boolean, because a single flag makes every async button on a screen spin at
+   * once (ResultsScreen has two). Per-clip work has its own `regenerating` map.
+   */
+  pending: Pending
   videosUsed: number
   /** Finished jobs, newest first. Loaded from the server. */
   projects: Project[]
@@ -76,7 +98,7 @@ const initialState: SnipState = {
   stage: null,
   jobStatus: null,
   jobError: null,
-  busy: false,
+  pending: null,
   videosUsed: 0,
   projects: [],
   jobId: '',
@@ -224,12 +246,12 @@ export function useSnipline() {
       // "Unauthorized" in a toast would leave the app looking broken on a screen
       // whose every action now fails, so go back to the login screen instead.
       if (e instanceof ApiError && e.status === 401) {
-        setState((s) => ({ ...s, busy: false, user: null, screen: 'login' }))
+        setState((s) => ({ ...s, pending: null, user: null, screen: 'login' }))
         say('Your session expired. Sign in again.')
         return
       }
       const message = e instanceof ApiError ? e.message : 'Something went wrong.'
-      setState((s) => ({ ...s, busy: false }))
+      setState((s) => ({ ...s, pending: null }))
       say(message)
     },
     [say],
@@ -375,7 +397,7 @@ export function useSnipline() {
       return
     }
 
-    patch({ busy: true })
+    patch({ pending: 'startJob' })
     try {
       const { jobId } = await api.createJob({
         videoId: state.source.videoId,
@@ -410,6 +432,7 @@ export function useSnipline() {
     const id = state.jobId
     setState((s) => ({
       ...s,
+      pending: 'cancelJob',
       screen: 'new',
       progress: 0,
       jobDone: false,
@@ -417,17 +440,18 @@ export function useSnipline() {
       videosUsed: Math.max(0, s.videosUsed - 1),
     }))
     if (id) await api.cancelJob(id).catch(() => {})
+    patch({ pending: null })
     say('Job cancelled.')
-  }, [say, state.jobId])
+  }, [patch, say, state.jobId])
 
   const regenerateAll = useCallback(async () => {
     if (!state.jobId) return
-    patch({ busy: true })
+    patch({ pending: 'regenerateAll' })
     try {
       await api.regenerate(state.jobId)
       setState((s) => ({
         ...s,
-        busy: false,
+        pending: null,
         screen: 'processing',
         progress: 0,
         stage: 'Queued',
@@ -451,11 +475,17 @@ export function useSnipline() {
   }, [go, say, state.clips.length])
 
   /** Leaves the app for Google's consent screen; the callback brings us back. */
-  const signIn = useCallback(() => auth.signInWithGoogle(), [])
+  const signIn = useCallback(() => {
+    // Nothing clears this: the browser is leaving the page. It exists so the
+    // button reads as busy during the wait for the redirect to take effect.
+    patch({ pending: 'signIn' })
+    auth.signInWithGoogle()
+  }, [patch])
 
   const signOut = useCallback(async () => {
     unsubscribe.current?.()
     unsubscribe.current = null
+    patch({ pending: 'signOut' })
     // Drop the server session first, so the cookie cannot outlive the UI state.
     await auth.logout().catch(() => {
       // Already gone, or the API is down: clear the client either way.
@@ -477,10 +507,12 @@ export function useSnipline() {
   /** Reopen a past project, re-fetching its clips. */
   const openProject = useCallback(
     async (id: string) => {
-      patch({ busy: true })
+      // Keyed by id: the list shows one button per project and only the
+      // clicked row should look busy.
+      patch({ pending: `openProject:${id}` })
       const job = await refreshJob(id)
-      if (job) setState((s) => ({ ...s, busy: false, screen: 'results' }))
-      else patch({ busy: false })
+      if (job) setState((s) => ({ ...s, pending: null, screen: 'results' }))
+      else patch({ pending: null })
     },
     [patch, refreshJob],
   )
@@ -494,10 +526,10 @@ export function useSnipline() {
       say('Paste a link first, or try a sample.')
       return
     }
-    patch({ busy: true })
+    patch({ pending: 'analyze' })
     try {
       const source = await api.analyze(state.url.trim())
-      patch({ source, busy: false, screen: 'setup' })
+      patch({ source, pending: null, screen: 'setup' })
     } catch (e) {
       fail(e)
     }
@@ -558,16 +590,20 @@ export function useSnipline() {
     }
 
     say(ready.length === 1 ? 'Downloading…' : `Zipping ${ready.length} clips…`)
+    // The toast clears itself after 2.6s, which a multi-clip zip routinely
+    // outlives -- the button is what has to stay busy for the real duration.
+    patch({ pending: 'download' })
     try {
       await api.download(
         ready.map((c) => c.id),
         state.filter,
         ready[0].renders[state.filter]?.url ?? null,
       )
+      patch({ pending: null })
     } catch (e) {
       fail(e)
     }
-  }, [say, fail, state.clips, state.filter])
+  }, [patch, say, fail, state.clips, state.filter])
 
   /**
    * Re-cut one clip. The server re-renders it, so this polls that clip until

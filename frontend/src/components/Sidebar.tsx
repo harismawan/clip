@@ -58,9 +58,11 @@ export function Sidebar() {
       <button
         type="button"
         onClick={signOut}
-        className="mt-2.5 cursor-pointer px-1.5 text-left text-[11.5px] font-medium text-black/40 hover:text-ink"
+        disabled={state.pending === 'signOut'}
+        aria-busy={state.pending === 'signOut' || undefined}
+        className="mt-2.5 cursor-pointer px-1.5 text-left text-[11.5px] font-medium text-black/40 hover:text-ink disabled:cursor-not-allowed"
       >
-        Sign out
+        {state.pending === 'signOut' ? 'Signing out…' : 'Sign out'}
       </button>
     </nav>
   )

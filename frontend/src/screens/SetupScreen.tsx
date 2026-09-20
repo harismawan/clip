@@ -134,8 +134,14 @@ export function SetupScreen() {
           </button>
 
           <div className="flex flex-wrap items-center gap-3.5">
-            <Button onClick={startJob} className="h-[46px] min-w-[220px] flex-1 text-[14px]">
-              Download &amp; make {state.count} clips
+            <Button
+              onClick={startJob}
+              loading={state.pending === 'startJob'}
+              className="h-[46px] min-w-[220px] flex-1 text-[14px]"
+            >
+              {state.pending === 'startJob'
+                ? 'Queueing…'
+                : `Download & make ${state.count} clips`}
             </Button>
             <span className="text-[12px] whitespace-nowrap text-black/42">
               {src.eta} · uses 1 of 3

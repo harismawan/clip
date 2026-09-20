@@ -4,7 +4,8 @@
     "target": "es2023",
     "lib": ["ES2023", "DOM"],
     "module": "esnext",
-    "types": ["vite/client"],
+    // "bun" so the .test.tsx files typecheck: tsc -b compiles them too.
+    "types": ["vite/client", "bun"],
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,
 

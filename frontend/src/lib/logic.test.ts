@@ -1,4 +1,4 @@
-import { beforeEach, expect, test, vi } from 'vitest'
+import { beforeEach, expect, test } from 'bun:test'
 import { clampTrim, firstEnabled, mergeJob, restored } from '../state/useSnipline'
 import type { SnipState } from '../state/useSnipline'
 import type { JobSnapshot } from './api'
@@ -115,10 +115,20 @@ const saved = (over: Partial<Persisted>) =>
   })
 
 beforeEach(() => {
+  // This file used to import `vi` from vitest. vitest was a declared dependency,
+  // but the suite runs under `bun test`, which substitutes its own `vi` shim --
+  // and that shim has no stubGlobal, so all 12 tests here threw before reaching
+  // an assertion. Defining the global directly needs no shim at all: persist.ts
+  // only calls getItem/setItem, and each beforeEach installs a fresh store.
   const store = new Map<string, string>()
-  vi.stubGlobal('localStorage', {
-    getItem: (k: string) => store.get(k) ?? null,
-    setItem: (k: string, v: string) => void store.set(k, v),
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+      clear: () => store.clear(),
+    },
   })
 })
 
@@ -150,7 +160,8 @@ test('restored survives storage that is junk or unavailable', () => {
   localStorage.setItem('snipline.v2', '{"jobId":42,"screen":"projects"}')
   expect(restored().jobId).toBeUndefined()
 
-  vi.stubGlobal('localStorage', undefined)
+  // Storage absent entirely, as in a locked-down browser.
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: undefined })
   expect(restored()).toEqual({})
 })
 

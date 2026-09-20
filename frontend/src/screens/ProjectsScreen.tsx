@@ -58,12 +58,18 @@ export function ProjectsScreen() {
                   {ago(project.createdAt)}
                 </div>
               </div>
+              {/*
+                Keyed per row: opening a project re-fetches its clips, and only
+                the row that was clicked should look busy.
+              */}
               <button
                 type="button"
                 onClick={() => openProject(project.id)}
-                className="flex-none cursor-pointer text-[12.5px] font-medium text-violet hover:text-violet-deep"
+                disabled={state.pending === `openProject:${project.id}`}
+                aria-busy={state.pending === `openProject:${project.id}` || undefined}
+                className="flex-none cursor-pointer text-[12.5px] font-medium text-violet hover:text-violet-deep disabled:cursor-not-allowed disabled:text-black/35"
               >
-                Open
+                {state.pending === `openProject:${project.id}` ? 'Opening…' : 'Open'}
               </button>
             </li>
           ))}
