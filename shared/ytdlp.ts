@@ -120,6 +120,7 @@ export async function download(
       '--no-playlist',
       '--no-warnings',
       '--newline', // one progress line per update instead of \r redraws
+      '--progress', // --print implies --quiet, which would suppress progress entirely
       '--no-part', // avoid .part debris if the worker is killed
       '-f',
       DEFAULT_FORMAT,
