@@ -1,8 +1,11 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
-import { eq, desc, inArray } from 'drizzle-orm'
+import { eq, and, desc, inArray } from 'drizzle-orm'
 import { db, jobs, videos, clips, renders } from '../db/index.ts'
+import { ownedJob, countActiveJobs, countJobsSince } from '../ownership.ts'
+import { quotaVerdict } from '../quota.ts'
+import { env } from '../env.ts'
 import { toJobDTO, toSourceDTO } from '../mappers.ts'
 import { enqueueProcess, boss, PROCESS_QUEUE } from '../queue.ts'
 import { subscribe, ensureListening } from '../events.ts'
@@ -33,12 +36,23 @@ jobsRoutes.post('/', async (c) => {
     return c.json({ error: 'Pick at least one output format.' }, 400)
   }
 
+  // Signup is open to any Google account and the worker runs one job at a time,
+  // so this is what stops one person queueing the box out from under everyone.
+  const user = c.get('user')
+  const refusal = quotaVerdict({
+    activeCount: await countActiveJobs(user.id),
+    dailyCount: await countJobsSince(user.id, new Date(Date.now() - 86_400_000)),
+    dailyLimit: env.QUOTA_JOBS_PER_DAY,
+  })
+  if (refusal) return c.json({ error: refusal.message }, refusal.status)
+
   const [video] = await db.select().from(videos).where(eq(videos.id, b.videoId)).limit(1)
   if (!video) return c.json({ error: 'Unknown video. Analyse the URL again.' }, 404)
 
   const [job] = await db
     .insert(jobs)
     .values({
+      userId: user.id,
       videoId: video.id,
       clipCount: b.count,
       lengthPreset: b.lengthIdx,
@@ -56,7 +70,7 @@ jobsRoutes.post('/', async (c) => {
 
 /** Full job state: options, source, clips, presigned render URLs. */
 jobsRoutes.get('/:id', async (c) => {
-  const found = await loadJob(c.req.param('id'))
+  const found = await loadJob(c.get('user').id, c.req.param('id'))
   if (!found) return c.json({ error: 'Job not found' }, 404)
   return c.json(await toJobDTO(found.job, found.video, found.clipRows, found.renderRows))
 })
@@ -67,7 +81,7 @@ jobsRoutes.get('/:id', async (c) => {
  */
 jobsRoutes.get('/:id/events', async (c) => {
   const jobId = c.req.param('id')
-  const [job] = await db.select().from(jobs).where(eq(jobs.id, jobId)).limit(1)
+  const job = await ownedJob(c.get('user').id, jobId)
   if (!job) return c.json({ error: 'Job not found' }, 404)
 
   await ensureListening()
@@ -115,7 +129,7 @@ jobsRoutes.get('/:id/events', async (c) => {
 
 jobsRoutes.post('/:id/cancel', async (c) => {
   const id = c.req.param('id')
-  const [job] = await db.select().from(jobs).where(eq(jobs.id, id)).limit(1)
+  const job = await ownedJob(c.get('user').id, id)
   if (!job) return c.json({ error: 'Job not found' }, 404)
   if (isTerminal(job.status)) return c.json({ ok: true, status: job.status })
 
@@ -136,7 +150,7 @@ jobsRoutes.post('/:id/cancel', async (c) => {
 /** Re-run a job from scratch, reusing the source and its transcript. */
 jobsRoutes.post('/:id/regenerate', async (c) => {
   const id = c.req.param('id')
-  const [job] = await db.select().from(jobs).where(eq(jobs.id, id)).limit(1)
+  const job = await ownedJob(c.get('user').id, id)
   if (!job) return c.json({ error: 'Job not found' }, 404)
 
   await deleteJobArtifacts(id)
@@ -163,7 +177,7 @@ jobsRoutes.get('/', async (c) => {
     .select()
     .from(jobs)
     .innerJoin(videos, eq(jobs.videoId, videos.id))
-    .where(eq(jobs.status, 'completed'))
+    .where(and(eq(jobs.status, 'completed'), eq(jobs.userId, c.get('user').id)))
     .orderBy(desc(jobs.completedAt))
     .limit(100)
 
@@ -178,8 +192,8 @@ jobsRoutes.get('/', async (c) => {
   return c.json(out)
 })
 
-async function loadJob(id: string) {
-  const [job] = await db.select().from(jobs).where(eq(jobs.id, id)).limit(1)
+async function loadJob(userId: string, id: string) {
+  const job = await ownedJob(userId, id)
   if (!job) return null
 
   const [video] = await db.select().from(videos).where(eq(videos.id, job.videoId)).limit(1)

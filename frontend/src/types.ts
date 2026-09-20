@@ -1,4 +1,9 @@
 export type Screen =
+  /**
+   * Before /api/auth/me has answered. Renders nothing: without it every reload
+   * flashes the login screen for a moment before landing on your projects.
+   */
+  | 'booting'
   | 'login'
   | 'new'
   | 'setup'

@@ -1,18 +1,45 @@
 /**
- * Media delivery. Mounted OUTSIDE the API-token middleware: these URLs carry
- * their own HMAC signature so that <img> and <a download>, which cannot set an
- * Authorization header, still work.
+ * Media delivery. Mounted OUTSIDE the session middleware, but not public.
+ *
+ * Two independent checks must both pass: the URL's own HMAC signature, and a
+ * session belonging to the clip's owner. The signature alone was enough in Tier
+ * A, when one token meant one pool of projects; with accounts, a link that works
+ * for anyone who has it is a hole in per-user isolation.
+ *
+ * It does its own session check rather than sitting behind requireSession
+ * because the failure mode differs: a JSON 401 body is invisible to an <img>,
+ * which would simply render broken with no clue why. Everything here answers 403
+ * for a bad signature and 404 for "not yours", exactly as it would for a clip
+ * that does not exist.
+ *
+ * Same-origin <img>, <video> and <a download> send cookies automatically, so
+ * nothing in the app has to know about any of this.
  */
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { Readable } from 'node:stream'
 import { and, eq } from 'drizzle-orm'
+import { getCookie } from 'hono/cookie'
 import { db, renders, clips } from '../db/index.ts'
 import { s3 } from '../s3.ts'
 import { env } from '../env.ts'
 import { verifyMedia } from '../../../shared/mediaToken.ts'
 import { slugify } from '../../../shared/format.ts'
+import { SESSION_COOKIE } from '../auth.ts'
+import { hashToken, isExpired } from '../session.ts'
+import { lookupSession } from '../sessionStore.ts'
+import { ownedClip } from '../ownership.ts'
 
 export const mediaRoutes = new Hono()
+
+/** The signed-in user id, or null. Media answers 404 rather than 401. */
+async function viewerId(c: Context): Promise<string | null> {
+  const token = getCookie(c, SESSION_COOKIE) ?? ''
+  if (!token) return null
+  const found = await lookupSession(hashToken(token))
+  if (!found || isExpired(found.expiresAt)) return null
+  return found.user.id
+}
 
 mediaRoutes.get('/:file', async (c) => {
   const file = c.req.param('file')
@@ -27,6 +54,13 @@ mediaRoutes.get('/:file', async (c) => {
 
   if (!verifyMedia(env.API_TOKEN, { clipId, ratio, kind, exp }, sig)) {
     return c.json({ error: 'Link expired or invalid' }, 403)
+  }
+
+  // A valid signature is no longer sufficient. The viewer must be signed in AND
+  // own the clip, so a leaked or shared URL is useless to anyone else.
+  const viewer = await viewerId(c)
+  if (!viewer || !(await ownedClip(viewer, clipId))) {
+    return c.json({ error: 'Not found' }, 404)
   }
 
   const [render] = await db

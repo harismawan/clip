@@ -1,6 +1,6 @@
 /**
  * Environment validation. Fails loudly at boot rather than at the first request,
- * because a missing API_TOKEN would otherwise silently leave the API open.
+ * because a missing credential would otherwise silently leave the API open.
  */
 import { z } from 'zod'
 
@@ -8,9 +8,24 @@ const schema = z.object({
   DATABASE_URL: z.string().min(1),
   PORT: z.coerce.number().default(3004),
   HOST: z.string().default('127.0.0.1'),
-  // No default and no empty string allowed: an unset token must stop the boot,
-  // never fall back to "no auth".
+  /**
+   * HMAC key for signed media URLs, and nothing else since Tier C.
+   *
+   * It used to gate every /api route, but the SPA read it at build time, so it
+   * shipped inside the JS bundle and was never a secret. Sessions replaced it as
+   * the access credential; it survives only as the signing key in
+   * shared/mediaToken.ts, where being long and random is all that is asked of it.
+   */
   API_TOKEN: z.string().min(16, 'API_TOKEN must be at least 16 chars (openssl rand -hex 32)'),
+
+  // Google OAuth. No defaults: an unset pair must stop the boot rather than
+  // leave every /api route reachable with no way to sign in.
+  GOOGLE_CLIENT_ID: z.string().min(1, 'GOOGLE_CLIENT_ID is required (Google Cloud Console)'),
+  GOOGLE_CLIENT_SECRET: z.string().min(1, 'GOOGLE_CLIENT_SECRET is required'),
+  /** How long a login lasts. Nothing here calls a Google API, so there is no refresh. */
+  SESSION_TTL_DAYS: z.coerce.number().default(30),
+  /** Per-user jobs per rolling 24h. Worker concurrency is 1; see quota.ts. */
+  QUOTA_JOBS_PER_DAY: z.coerce.number().default(3),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
   /**
    * Publicly reachable origin of this API. Not the same as HOST:PORT when nginx
@@ -44,3 +59,11 @@ if (!parsed.success) {
 export const env = parsed.data
 
 export const corsOrigins = env.CORS_ORIGIN.split(',').map((s) => s.trim())
+
+/**
+ * Derived, never configured. Google matches the redirect_uri exactly against the
+ * client's registered value, and a separate env var is one more thing that can
+ * disagree with PUBLIC_API_URL. Must match the "Authorized redirect URI" in the
+ * Google Cloud Console entry for GOOGLE_CLIENT_ID.
+ */
+export const oauthRedirectUri = `${env.PUBLIC_API_URL.replace(/\/$/, '')}/api/auth/google/callback`

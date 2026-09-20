@@ -23,7 +23,7 @@
 #   --serial         run stages one at a time (easier to read when debugging)
 #   -h, --help       show this
 #
-# The site has NO authentication -- see the comment in deploy/nginx/$SITE.
+# Auth is Google sign-in with a session cookie; nginx carries no gate of its own.
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -78,9 +78,22 @@ API_PORT="$(envval PORT)"; API_PORT="${API_PORT:-3004}"
 PUBLIC_API_URL="$(envval PUBLIC_API_URL)"
 API_TOKEN="$(envval API_TOKEN)"
 OPENROUTER_API_KEY="$(envval OPENROUTER_API_KEY)"
+GOOGLE_CLIENT_ID="$(envval GOOGLE_CLIENT_ID)"
+GOOGLE_CLIENT_SECRET="$(envval GOOGLE_CLIENT_SECRET)"
 
-[ -n "$API_TOKEN" ] || die "API_TOKEN is empty in .env"
+[ -n "$API_TOKEN" ] || die "API_TOKEN is empty in .env (signs media URLs)"
 [ -n "$OPENROUTER_API_KEY" ] || die "OPENROUTER_API_KEY is empty in .env (range selection will fail after transcription)"
+
+# Without these the API refuses to boot, so catch it here rather than watching
+# pm2 crashloop. The redirect URI is derived from PUBLIC_API_URL and must match
+# the Google client exactly.
+if [ -z "$GOOGLE_CLIENT_ID" ] || [ -z "$GOOGLE_CLIENT_SECRET" ]; then
+  die "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are empty in .env.
+       Create an OAuth 2.0 Web application client at
+         https://console.cloud.google.com/apis/credentials
+       with this authorized redirect URI:
+         https://$SITE/api/auth/google/callback"
+fi
 
 # The worker is the half that does the work, and every one of these fails only
 # AFTER a multi-GB download if it is missing. Check them while it is free.
@@ -127,9 +140,6 @@ if [ "$DO_API" = 1 ]; then
   fi
 fi
 
-if [ "$DO_NGINX" = 1 ]; then
-  warn "$SITE is unauthenticated — POST /api/jobs is open to anyone who finds it"
-fi
 ok "tooling, env and ports consistent (API :$API_PORT)"
 
 # ------------------------------------------------------------ stage runners
@@ -174,9 +184,10 @@ stage_web_build() {
     bun install --frozen-lockfile 2>/dev/null || bun install
     # VITE_API_URL stays unset on purpose: in production the SPA and API share
     # an origin, and the client's default of a bare "/api" is what we want.
-    # VITE_API_TOKEN is baked into the bundle, so it is public -- it satisfies
-    # the backend middleware, it does not protect anything. See the vhost.
-    VITE_API_TOKEN="$API_TOKEN" bun run build
+    # Nothing secret is passed in: the bundle holds no credential at all since
+    # sign-in moved to a session cookie. VITE_API_TOKEN used to be inlined here,
+    # which is exactly why it could never be the gate.
+    bun run build
     [ -f dist/index.html ] || { echo "build produced no dist/index.html"; exit 1; }
   )
 }
@@ -322,6 +333,21 @@ fi
 
 if [ "$DO_NGINX" = 1 ] || [ "$DO_WEB" = 1 ]; then
   check "$SITE / serves the SPA" 200 "$(http_code "https://$SITE/")"
+
+  # 401 is the PASS: no cookie, no projects. This is the gate that replaced
+  # nginx's basic auth, and a 200 here would mean every visitor can read and
+  # queue jobs -- so it is checked on every deploy.
+  check "$SITE /api/projects refuses without a session" 401 \
+    "$(http_code "https://$SITE/api/projects")"
+
+  # Sign-in must be reachable without one, and must actually bounce to Google.
+  check "$SITE /api/auth/google redirects to Google" 302 \
+    "$(http_code "https://$SITE/api/auth/google")"
+  google_target="$(curl -s -o /dev/null -w '%{redirect_url}' --max-time 10 "https://$SITE/api/auth/google" || true)"
+  case "$google_target" in
+    https://accounts.google.com/*) ok "$SITE sign-in points at Google" ;;
+    *) printf "    \033[31mFAIL\033[0m %s /api/auth/google went to '%s'\n" "$SITE" "$google_target"; FAILED=1 ;;
+  esac
 
   # The one that proves the /api proxy block works: this must be JSON from the
   # API, not the SPA's index.html.

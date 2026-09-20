@@ -1,48 +1,54 @@
-import { timingSafeEqual } from 'node:crypto'
-import type { MiddlewareHandler } from 'hono'
-import { env } from './env.ts'
-
-const expected = Buffer.from(env.API_TOKEN)
-
 /**
- * Shared-secret gate.
+ * Session gate.
  *
- * This exists because POST /api/jobs is otherwise an unauthenticated
- * "download an arbitrary URL and burn every core for 40 minutes" endpoint.
- * Exposed at clip2.mhamzah.id that hands a stranger free compute, bandwidth and
- * storage, and lets them wedge the box.
+ * Replaces the Tier A shared-secret middleware. That gate compared `API_TOKEN`
+ * in constant time, which was sound cryptography protecting a secret the SPA
+ * published: the bundle was built with VITE_API_TOKEN inlined, so every visitor
+ * could read it. It was also why the SSE route accepted the token as a query
+ * parameter -- EventSource cannot set headers -- which put the secret into nginx
+ * access logs. Cookies are sent by EventSource natively, so both are gone.
  *
- * It is a gate, not identity: everyone holding the token shares one pool of
- * projects. Per-user isolation is Tier C.
+ * The lookup is injected rather than imported so this module stays free of the
+ * database (and therefore of env.ts, which exits the process when unconfigured),
+ * which is what lets the gate be tested without either.
  */
-export const requireToken: MiddlewareHandler = async (c, next) => {
-  const header = c.req.header('Authorization') ?? ''
-  let token = header.startsWith('Bearer ') ? header.slice(7) : ''
+import type { MiddlewareHandler } from 'hono'
+import { getCookie } from 'hono/cookie'
+import { hashToken, isExpired } from './session.ts'
 
-  // EventSource cannot set request headers, so the SSE route -- and only that
-  // route -- also accepts the token as a query parameter. Allowing it
-  // everywhere would leak the secret into access logs and Referer headers.
-  if (!token && c.req.path.endsWith('/events')) {
-    token = c.req.query('token') ?? ''
-  }
+export const SESSION_COOKIE = 'clip_session'
 
-  if (!safeEqual(token, expected)) {
-    return c.json({ error: 'Unauthorized' }, 401)
-  }
-  await next()
+/** The signed-in user, as handlers see it on the context. */
+export interface SessionUser {
+  id: string
+  email: string
+  name: string | null
+  pictureUrl: string | null
 }
 
-/**
- * timingSafeEqual throws on a length mismatch, which would itself leak length
- * through the error path -- so compare lengths first and always run the
- * comparison against a same-length buffer.
- */
-function safeEqual(given: string, want: Buffer): boolean {
-  const g = Buffer.from(given)
-  if (g.length !== want.length) {
-    // Still burn a comparison so the failure time does not depend on length.
-    timingSafeEqual(want, want)
-    return false
+/** Resolves a session id (the token's hash) to its user, or null. */
+export type SessionLookup = (
+  sessionId: string,
+) => Promise<{ user: SessionUser; expiresAt: Date } | null>
+
+declare module 'hono' {
+  interface ContextVariableMap {
+    user: SessionUser
   }
-  return timingSafeEqual(g, want)
+}
+
+export function requireSession(lookup: SessionLookup): MiddlewareHandler {
+  return async (c, next) => {
+    const token = getCookie(c, SESSION_COOKIE) ?? ''
+    // No cookie cannot become a session, so do not spend a query on it.
+    if (!token) return c.json({ error: 'Unauthorized' }, 401)
+
+    const found = await lookup(hashToken(token))
+    if (!found || isExpired(found.expiresAt)) {
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+
+    c.set('user', found.user)
+    await next()
+  }
 }

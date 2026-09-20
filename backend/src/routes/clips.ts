@@ -4,6 +4,7 @@ import { eq, and, inArray } from 'drizzle-orm'
 import { Readable } from 'node:stream'
 import archiver from 'archiver'
 import { db, clips, renders, jobs } from '../db/index.ts'
+import { ownedClip, ownedClips } from '../ownership.ts'
 import { s3 } from '../s3.ts'
 import { enqueueRecut } from '../queue.ts'
 import { RATIOS } from '../../../shared/types.ts'
@@ -18,6 +19,12 @@ const ratioQuery = z.enum(RATIOS as unknown as [Ratio, ...Ratio[]]).optional()
 
 /** Redirect to a presigned URL rather than proxying the bytes through the API. */
 clipsRoutes.get('/:id/download', async (c) => {
+  // 404, not 403: a clip you do not own must be indistinguishable from one that
+  // does not exist, or the response confirms somebody else has it.
+  if (!(await ownedClip(c.get('user').id, c.req.param('id')))) {
+    return c.json({ error: 'That clip is not ready yet.' }, 404)
+  }
+
   const ratio = ratioQuery.safeParse(c.req.query('ratio'))
   const [render] = await db
     .select()
@@ -54,7 +61,7 @@ clipsRoutes.get('/:id/download', async (c) => {
  */
 clipsRoutes.post('/:id/redo', async (c) => {
   const id = c.req.param('id')
-  const [clip] = await db.select().from(clips).where(eq(clips.id, id)).limit(1)
+  const clip = await ownedClip(c.get('user').id, id)
   if (!clip) return c.json({ error: 'Clip not found' }, 404)
 
   const [job] = await db.select().from(jobs).where(eq(jobs.id, clip.jobId)).limit(1)
@@ -84,13 +91,17 @@ downloadsRoutes.post('/', async (c) => {
   }
   const { clipIds, ratio } = parsed.data
 
-  const clipRows = await db.select().from(clips).where(inArray(clips.id, clipIds))
+  // The ids arrive in a request body, so this is the easiest endpoint in the API
+  // to leak somebody else's render from. Everything downstream uses `ownedIds`,
+  // never the caller's list.
+  const clipRows = await ownedClips(c.get('user').id, clipIds)
   if (clipRows.length === 0) return c.json({ error: 'No clips found.' }, 404)
+  const ownedIds = clipRows.map((x) => x.id)
 
   const renderRows = await db
     .select()
     .from(renders)
-    .where(and(inArray(renders.clipId, clipIds), eq(renders.ratio, ratio)))
+    .where(and(inArray(renders.clipId, ownedIds), eq(renders.ratio, ratio)))
 
   const ready = renderRows.filter((r) => r.status === 'ready' && r.s3Key)
   if (ready.length === 0) {

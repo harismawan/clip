@@ -2,9 +2,13 @@
  * Drizzle schema. Imported by both backend and worker (and, for its inferred
  * types, the frontend) so the wire contract has exactly one definition.
  *
- * No `users` table by design: Tier A is single-tenant behind a shared API token.
- * Adding users later is an additive migration; a stubbed fake user would have to
- * be unpicked.
+ * Tier C added `users` and `sessions`. Ownership hangs off ONE column --
+ * `jobs.user_id` -- because clips, renders and transcripts all reach a user
+ * transitively through it, so there is a single place to get scoping right.
+ *
+ * `videos` and `transcripts` stay global on purpose: they are a URL-keyed cache
+ * of the most expensive stage in the pipeline, and two users clipping the same
+ * link should share it.
  */
 import {
   pgTable,
@@ -33,6 +37,43 @@ export const jobStatus = pgEnum('job_status', [
 export const clipStatus = pgEnum('clip_status', ['pending', 'rendering', 'ready', 'failed'])
 export const renderStatus = pgEnum('render_status', ['pending', 'rendering', 'ready', 'failed'])
 
+/**
+ * A signed-in person. Keyed on Google's `sub` claim rather than email: an
+ * account's email address can change, and matching on email would hand the old
+ * address's projects to whoever later inherits it. Email is display only.
+ */
+export const users = pgTable(
+  'users',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    googleSub: text('google_sub').notNull().unique(),
+    email: text('email').notNull(),
+    name: text('name'),
+    pictureUrl: text('picture_url'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('users_google_sub_idx').on(t.googleSub)],
+)
+
+/**
+ * A live login. `id` is the SHA-256 of the cookie token, never the token itself,
+ * so a database dump cannot be replayed as a session. The user index exists so
+ * "log out everywhere" is one DELETE when it is wanted.
+ */
+export const sessions = pgTable(
+  'sessions',
+  {
+    id: text('id').primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('sessions_user_idx').on(t.userId)],
+)
+
 /** A resolved source video. One row per URL; re-analysing the same URL reuses it. */
 export const videos = pgTable(
   'videos',
@@ -60,6 +101,13 @@ export const jobs = pgTable(
   'jobs',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    /**
+     * The single owner column. Every ownership check in the API resolves to this
+     * one, so a clip, render or download is reachable only through its job.
+     */
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
     videoId: uuid('video_id')
       .notNull()
       .references(() => videos.id, { onDelete: 'cascade' }),
@@ -81,7 +129,12 @@ export const jobs = pgTable(
     startedAt: timestamp('started_at', { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }),
   },
-  (t) => [index('jobs_status_idx').on(t.status), index('jobs_created_idx').on(t.createdAt)],
+  (t) => [
+    index('jobs_status_idx').on(t.status),
+    index('jobs_created_idx').on(t.createdAt),
+    // Both quota counts and every project listing filter on the owner.
+    index('jobs_user_idx').on(t.userId),
+  ],
 )
 
 /**
@@ -163,6 +216,8 @@ export interface TranscriptSegment {
   text: string
 }
 
+export type User = typeof users.$inferSelect
+export type Session = typeof sessions.$inferSelect
 export type Video = typeof videos.$inferSelect
 export type Job = typeof jobs.$inferSelect
 export type Transcript = typeof transcripts.$inferSelect

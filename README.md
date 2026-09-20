@@ -32,12 +32,19 @@ Design notes: [`docs/superpowers/specs/2026-09-20-clip-pipeline-design.md`](docs
 cp .env.example .env
 ```
 
-Then fill in two values in `.env`:
+Then fill in four values in `.env`:
 
 | Variable | How |
 |---|---|
-| `API_TOKEN` | `openssl rand -hex 32` |
+| `API_TOKEN` | `openssl rand -hex 32` — signs media URLs |
 | `OPENROUTER_API_KEY` | https://openrouter.ai/keys |
+| `GOOGLE_CLIENT_ID` | OAuth 2.0 Web application client, [Google Cloud Console](https://console.cloud.google.com/apis/credentials) |
+| `GOOGLE_CLIENT_SECRET` | same client |
+
+The Google client needs one authorized redirect URI, derived from
+`PUBLIC_API_URL` — locally `http://localhost:3014/api/auth/google/callback`. Only
+`openid email profile` are requested, so the consent screen needs no Google
+review.
 
 ```bash
 bun install
@@ -47,12 +54,10 @@ bun run db:migrate
 ./scripts/setup-python.sh # whisper-ctranslate2 + MediaPipe (~400MB of wheels)
 ```
 
-Point the frontend at the API:
-
-```bash
-cp frontend/.env.example frontend/.env.local
-# set VITE_API_TOKEN to the same value as API_TOKEN
-```
+The frontend needs no configuration: `bun run dev:web` proxies `/api` to the API,
+so both share one origin in development exactly as they do in production. (That
+is not cosmetic — the session cookie is `SameSite=Lax` and a browser will not
+send it cross-origin.)
 
 ## Run
 
@@ -131,21 +136,39 @@ whole API.
 
 ## Auth
 
-A single shared secret in `API_TOKEN`, required on every `/api` route. It exists
-because `POST /api/jobs` is otherwise an unauthenticated "download an arbitrary
-URL and burn every core for 40 minutes" endpoint — free compute, bandwidth and
-storage for anyone who finds it.
+Google sign-in, session cookie, per-user projects.
 
-It is a gate, not identity: everyone with the token shares one pool of projects.
-Real accounts, per-user isolation and quota enforcement are deliberately out of
-scope for now.
+`GET /api/auth/google` starts an authorization-code flow with PKCE; the callback
+exchanges the code server-to-server, upserts the user on Google's `sub` claim
+(not email — an address can change hands), and sets an httpOnly `SameSite=Lax`
+cookie holding a 256-bit opaque token. Only the token's SHA-256 is stored, so a
+database dump cannot be replayed as a login.
+
+Ownership hangs off one column, `jobs.user_id`. Clips, renders and downloads all
+reach a user through it, and every lookup goes through `ownedJob` / `ownedClips`
+in `backend/src/ownership.ts` rather than filtering at each call site. A job you
+do not own returns 404, never 403 — a 403 would confirm it exists. Signed media
+URLs need the signature **and** a session that owns the clip, so a shared link is
+useless to anyone else.
+
+`videos` and `transcripts` are deliberately global: a URL-keyed cache of the most
+expensive stage in the pipeline, shared by everyone who clips the same link.
+
+Signup is open to any Google account, so quota is load-bearing rather than
+optional: one active job per user, and `QUOTA_JOBS_PER_DAY` (default 3) per
+rolling 24 hours. Worker concurrency is 1, so without it one account can occupy
+the box all day. Refusals are 409 for the running-job conflict and 429 for the
+daily cap.
+
+`API_TOKEN` survives only as the HMAC key for media URLs. It used to gate `/api`,
+but the SPA inlined it at build time and published it in the JS bundle, which is
+why it could never be the real gate.
 
 ## Not built yet
 
 - **The editor screen** is still the original prototype — fixture data, no real
   playback. Making it real needs range-request media serving, generated filmstrip
   thumbnails and a real waveform.
-- Real auth, user accounts, quota enforcement
 - Caption rewriting
 - Live stream capture
 

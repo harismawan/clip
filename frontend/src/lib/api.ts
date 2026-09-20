@@ -5,7 +5,6 @@
 import type { Clip, Project, Ratio, Source, JobStatus } from '../types'
 
 const BASE: string = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '')
-const TOKEN: string = import.meta.env.VITE_API_TOKEN ?? ''
 
 /** Thrown for any non-2xx response, carrying the server's own message. */
 export class ApiError extends Error {
@@ -25,9 +24,12 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...init,
       headers: {
         'Content-Type': 'application/json',
-        ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}),
         ...init.headers,
       },
+      // The session cookie. 'same-origin' is fetch's default, but it is stated
+      // because it is the whole authentication story since Tier C -- there is no
+      // token in this bundle any more.
+      credentials: 'same-origin',
     })
   } catch {
     // A network failure has no response body, so it needs its own message --
@@ -68,6 +70,36 @@ export interface ProgressEvent {
   error: string | null
 }
 
+/** The signed-in user, as /api/auth/me reports them. */
+export interface Me {
+  id: string
+  email: string
+  name: string | null
+  pictureUrl: string | null
+}
+
+export const auth = {
+  /**
+   * Who is signed in, or null. Called once at boot, so a 401 is the expected
+   * answer for a visitor rather than an error worth surfacing.
+   */
+  async me(): Promise<Me | null> {
+    try {
+      return await call<Me>('/auth/me')
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) return null
+      throw e
+    }
+  },
+
+  /** Leaves the SPA entirely: Google's consent screen is not an XHR. */
+  signInWithGoogle(): void {
+    window.location.href = `${BASE}/api/auth/google`
+  },
+
+  logout: () => call<void>('/auth/logout', { method: 'POST' }),
+}
+
 export const api = {
   analyze: (url: string) => call<Source>('/sources/analyze', {
     method: 'POST',
@@ -96,17 +128,16 @@ export const api = {
   /**
    * Subscribe to job progress.
    *
-   * EventSource cannot send an Authorization header, so the token rides in the
-   * query string here. It stays inside this app's own origin and is the same
-   * shared secret the browser already holds, so this exposes nothing new.
+   * No credentials in the URL: EventSource cannot set an Authorization header,
+   * which is why the shared token used to ride in the query string (and into
+   * nginx's access log), but it sends same-origin cookies natively.
    */
   subscribe(
     jobId: string,
     onEvent: (e: ProgressEvent) => void,
     onError?: () => void,
   ): () => void {
-    const qs = TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : ''
-    const es = new EventSource(`${BASE}/api/jobs/${jobId}/events${qs}`)
+    const es = new EventSource(`${BASE}/api/jobs/${jobId}/events`)
 
     es.onmessage = (msg) => {
       if (!msg.data) return // keep-alive ping
@@ -139,10 +170,8 @@ export const api = {
 
     const res = await fetch(`${BASE}/api/downloads`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}),
-      },
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
       body: JSON.stringify({ clipIds, ratio }),
     })
     if (!res.ok) {

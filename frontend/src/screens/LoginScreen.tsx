@@ -8,8 +8,48 @@ const SHOWCASE = [
   { at: '0:52', lift: '-translate-y-[10px]' },
 ]
 
+/**
+ * What the callback puts in `?error=` when a sign-in does not complete, in the
+ * user's terms rather than the protocol's.
+ */
+const ERRORS: Record<string, string> = {
+  denied: 'Sign-in was cancelled.',
+  state: 'That sign-in link expired or was tampered with. Try again.',
+  code: 'Google did not return a sign-in code. Try again.',
+  exchange: 'Could not complete sign-in with Google. Try again in a moment.',
+}
+
+/** Google's four-colour G. Inline so the login screen needs no network to paint. */
+function GoogleMark() {
+  return (
+    <svg viewBox="0 0 18 18" className="block size-[18px]" aria-hidden="true">
+      <path
+        fill="#4285F4"
+        d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.91c1.7-1.57 2.69-3.88 2.69-6.62Z"
+      />
+      <path
+        fill="#34A853"
+        d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.91-2.26c-.81.54-1.84.86-3.05.86-2.34 0-4.32-1.58-5.03-3.71H1.02v2.34A8.99 8.99 0 0 0 9 18Z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M3.97 10.71a5.41 5.41 0 0 1 0-3.42V4.96H1.02a8.99 8.99 0 0 0 0 8.08l2.95-2.33Z"
+      />
+      <path
+        fill="#EA4335"
+        d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.59C13.46.89 11.43 0 9 0A8.99 8.99 0 0 0 1.02 4.96l2.95 2.33C4.68 5.16 6.66 3.58 9 3.58Z"
+      />
+    </svg>
+  )
+}
+
 export function LoginScreen() {
   const { signIn } = useApp()
+
+  // The callback redirects here with ?error=<code> rather than rendering JSON,
+  // because the browser arrives by top-level navigation.
+  const code = new URLSearchParams(window.location.search).get('error')
+  const error = code ? (ERRORS[code] ?? 'Sign-in failed. Try again.') : null
 
   return (
     <div className="grid min-h-0 flex-1 grid-cols-1 bg-white lg:grid-cols-[1.05fr_.95fr]">
@@ -25,46 +65,25 @@ export function LoginScreen() {
           Free while we’re in beta. No card, no watermark.
         </p>
 
-        <form
-          className="flex max-w-[352px] flex-col gap-2.5"
-          onSubmit={(e) => {
-            e.preventDefault()
-            signIn()
-          }}
-        >
-          <Button variant="outline" onClick={signIn} className="h-[46px] gap-2.5 text-[14px]">
-            <span className="block size-4 rounded-full border-2 border-[#C7C3BB]" />
+        <div className="flex max-w-[352px] flex-col gap-2.5">
+          {error && (
+            <p
+              role="alert"
+              className="mt-0 mb-1 rounded-[10px] bg-[#FDECEC] px-3.5 py-2.5 text-[12.5px] leading-[1.45] text-[#8C2F2F]"
+            >
+              {error}
+            </p>
+          )}
+
+          <Button onClick={signIn} className="h-[46px] gap-2.5 text-[14px]">
+            <GoogleMark />
             Continue with Google
-          </Button>
-          <Button variant="outline" onClick={signIn} className="h-[46px] gap-2.5 text-[14px]">
-            <span className="block size-4 rounded-[3px] border-2 border-[#C7C3BB]" />
-            Continue with TikTok
-          </Button>
-
-          <div className="my-2 flex items-center gap-3">
-            <span className="h-px flex-1 bg-black/10" />
-            <span className="text-[11.5px] text-black/35">or</span>
-            <span className="h-px flex-1 bg-black/10" />
-          </div>
-
-          <label htmlFor="login-email" className="text-[12px] font-medium text-ink-soft">
-            Email
-          </label>
-          <input
-            id="login-email"
-            type="email"
-            placeholder="you@email.com"
-            className="h-11 rounded-full border-[1.5px] border-ink px-4 text-[14px] text-ink outline-none focus:border-violet"
-          />
-
-          <Button type="submit" className="mt-1 h-[46px] text-[14px]">
-            Send me a login link
           </Button>
 
           <p className="mt-3 mb-0 text-[11.5px] leading-[1.5] text-black/40">
             By continuing you agree to the terms. We only download videos you have the right to use.
           </p>
-        </form>
+        </div>
       </div>
 
       <aside className="hidden flex-col justify-center gap-6 overflow-hidden bg-night px-11 py-12 lg:flex">

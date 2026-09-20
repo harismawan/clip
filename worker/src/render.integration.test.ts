@@ -20,6 +20,7 @@ const ENABLED = process.env.RUN_MEDIA_TESTS === '1'
 const maybe = ENABLED ? test : test.skip
 
 let workDir = ''
+let userId = ''
 let videoId = ''
 let jobId = ''
 let clipId = ''
@@ -53,6 +54,13 @@ beforeAll(async () => {
     '-c:a', 'aac', '-shortest', source,
   ])
 
+  // Jobs have an owner since Tier C, so the fixture needs a user to hang off.
+  const [user] = await db
+    .insert(schema.users)
+    .values({ googleSub: `test-render-${Date.now()}`, email: 'render@test.invalid' })
+    .returning()
+  userId = user.id
+
   const [video] = await db
     .insert(schema.videos)
     .values({
@@ -68,6 +76,7 @@ beforeAll(async () => {
   const [job] = await db
     .insert(schema.jobs)
     .values({
+      userId,
       videoId,
       clipCount: 1,
       lengthPreset: 0,
@@ -98,6 +107,8 @@ beforeAll(async () => {
 afterAll(async () => {
   if (!ENABLED) return
   await db.delete(schema.videos).where(eq(schema.videos.id, videoId)).catch(() => {})
+  // Deleting the user cascades to the job and its clips.
+  await db.delete(schema.users).where(eq(schema.users.id, userId)).catch(() => {})
   await rm(workDir, { recursive: true, force: true }).catch(() => {})
   await schema.pool.end().catch(() => {})
 })

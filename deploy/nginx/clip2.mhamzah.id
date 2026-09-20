@@ -21,17 +21,20 @@ server {
   root /var/www/html/clip2/dist;
   index index.html;
 
-  # NO GATE -- DELIBERATE, AND THE API IS PUBLIC BECAUSE OF IT.
+  # NO GATE HERE -- BY DESIGN, AND NO LONGER BECAUSE THERE ISN'T ONE.
   #
-  # This vhost used to carry auth_basic, which was the only real gate: the SPA
-  # reads VITE_API_TOKEN at BUILD time (frontend/src/lib/api.ts), so that token
-  # ships inside the JS bundle and anyone who loads the page can read it. With
-  # basic auth removed, POST /api/jobs is an open "download any URL and burn
-  # every core for 40 minutes" endpoint on a 4-core box.
+  # This vhost carried auth_basic until 2026-09-20, because the API's own
+  # API_TOKEN was inlined into the JS bundle at build time and so was public.
+  # Tier C replaced that with Google sign-in and a session cookie, which the
+  # application enforces: every /api route except /api/health and /api/auth/*
+  # refuses without a session (backend/src/auth.ts).
   #
-  # Owner's call. If this ever gets found, put access control in FRONT of nginx
-  # (Cloudflare Access, a VPN, Tailscale) or give the app a real login -- do not
-  # rely on API_TOKEN, which is not a secret here.
+  # So nothing needs to be added here -- but note what that means: this config is
+  # no longer what protects the box. If you ever see POST /api/jobs accepted
+  # without a cookie, the bug is in the API, not in nginx. deploy.sh asserts a 401
+  # on /api/projects for exactly that reason.
+  #
+  # Cookies pass through the proxy untouched; there is nothing to configure.
 
   # Nothing is uploaded through nginx -- sources are fetched by the worker and
   # renders are served out. This only needs to cover JSON request bodies.

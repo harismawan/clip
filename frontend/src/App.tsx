@@ -32,6 +32,11 @@ export default function App() {
   return (
     <AppContext value={snipline}>
       <div className="relative flex h-screen w-full flex-col overflow-hidden">
+        {/*
+          'booting' renders nothing on purpose: /api/auth/me has not answered, and
+          showing either the login screen or the app would be a guess that flashes
+          when it turns out wrong.
+        */}
         {state.screen === 'login' && <LoginScreen />}
         {state.screen === 'editor' && <EditorScreen />}
         {Inside && (

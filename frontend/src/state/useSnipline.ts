@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { LENGTHS, RATIOS, SAMPLE_URLS, TIMELINE_LEAD_IN, TIMELINE_SPAN } from '../data/fixtures'
 import { loadPersisted, savePersisted } from '../lib/persist'
-import { api, ApiError } from '../lib/api'
+import { api, auth, ApiError, type Me } from '../lib/api'
 import type { JobSnapshot } from '../lib/api'
 import type { Clip, JobStatus, Project, Ratio, Screen, Source, SourceKey } from '../types'
 
@@ -22,6 +22,8 @@ const ACTIVE: readonly JobStatus[] = [
 
 export interface SnipState {
   screen: Screen
+  /** Who is signed in. Null until /api/auth/me answers, and after a logout. */
+  user: Me | null
   url: string
   /** The resolved source, once a URL has been analysed. */
   source: Source | null
@@ -60,7 +62,8 @@ export interface SnipState {
 }
 
 const initialState: SnipState = {
-  screen: 'login',
+  screen: 'booting',
+  user: null,
   url: '',
   source: null,
   count: 12,
@@ -147,6 +150,9 @@ export function mergeJob(s: SnipState, job: JobSnapshot): SnipState {
 /** Reopen where we left off. Clips are re-fetched, never restored from storage. */
 export function restored(): Partial<SnipState> {
   const slice = loadPersisted()
+  // Neither is a place to come back to: 'booting' would never resolve without a
+  // second /me, and 'login' is decided by the session, not by last time.
+  if (slice.screen === 'booting' || slice.screen === 'login') delete slice.screen
   // The editor needs one clip in particular; come back to the grid instead.
   if (slice.screen === 'editor') slice.screen = 'results'
   // Without a job to re-fetch, the clip screens would come back empty.
@@ -157,7 +163,14 @@ export function restored(): Partial<SnipState> {
 }
 
 export function useSnipline() {
-  const [state, setState] = useState<SnipState>(() => ({ ...initialState, ...restored() }))
+  // Read once. The restored screen is held back until the session is known:
+  // applying it immediately would render someone's results before /me answers.
+  const [restoredSlice] = useState(restored)
+  const [state, setState] = useState<SnipState>(() => ({
+    ...initialState,
+    ...restoredSlice,
+    screen: 'booting',
+  }))
 
   const playTimer = useRef<number | null>(null)
   const toastTimer = useRef<number | null>(null)
@@ -207,12 +220,47 @@ export function useSnipline() {
 
   const fail = useCallback(
     (e: unknown) => {
+      // A 401 mid-session means the cookie expired or was revoked. Surfacing
+      // "Unauthorized" in a toast would leave the app looking broken on a screen
+      // whose every action now fails, so go back to the login screen instead.
+      if (e instanceof ApiError && e.status === 401) {
+        setState((s) => ({ ...s, busy: false, user: null, screen: 'login' }))
+        say('Your session expired. Sign in again.')
+        return
+      }
       const message = e instanceof ApiError ? e.message : 'Something went wrong.'
       setState((s) => ({ ...s, busy: false }))
       say(message)
     },
     [say],
   )
+
+  /**
+   * Resolve the session once, then reveal the app. Until this answers the screen
+   * is 'booting' and renders nothing.
+   */
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const me = await auth.me()
+        if (cancelled) return
+        if (me) patch({ user: me, screen: restoredSlice.screen ?? 'new' })
+        else patch({ user: null, screen: 'login' })
+      } catch {
+        // The API is unreachable. The login screen is the honest place to land:
+        // nothing else in the app can work either.
+        if (cancelled) return
+        patch({ user: null, screen: 'login' })
+        say('Could not reach the server.')
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+    // Once, on mount. restoredSlice is state and never changes identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const stopPlayback = useCallback(() => {
     if (playTimer.current) clearInterval(playTimer.current)
@@ -289,10 +337,19 @@ export function useSnipline() {
     [refreshJob, loadProjects, say],
   )
 
-  // Resume watching after a reload: the job kept running server-side.
+  /**
+   * Resume watching after a reload: the job kept running server-side.
+   *
+   * Waits for the session instead of running on mount, because on mount the
+   * screen is always 'booting' and every call here needs a cookie. The ref keeps
+   * it to once per load now that it has real dependencies.
+   */
+  const resumed = useRef(false)
   useEffect(() => {
+    if (!state.user || resumed.current) return
     if (!state.jobId) return
     if (state.screen !== 'processing' && state.screen !== 'results') return
+    resumed.current = true
 
     void refreshJob(state.jobId).then((job) => {
       if (job && ACTIVE.includes(job.status)) {
@@ -300,13 +357,13 @@ export function useSnipline() {
         watchJob(job.id)
       }
     })
-    // Deliberately runs once on mount: later transitions are driven explicitly.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [state.user, state.jobId, state.screen, refreshJob, patch, watchJob])
 
+  // Needs a session, so it waits for one rather than 401-ing on first paint.
   useEffect(() => {
+    if (!state.user) return
     void loadProjects()
-  }, [loadProjects])
+  }, [state.user, loadProjects])
 
   const startJob = useCallback(async () => {
     if (!RATIOS.some((r) => state.formats[r])) {
@@ -393,12 +450,26 @@ export function useSnipline() {
     else say('Make some clips first — paste a link.')
   }, [go, say, state.clips.length])
 
-  const signIn = useCallback(() => go('new'), [go])
+  /** Leaves the app for Google's consent screen; the callback brings us back. */
+  const signIn = useCallback(() => auth.signInWithGoogle(), [])
 
-  const signOut = useCallback(() => {
+  const signOut = useCallback(async () => {
     unsubscribe.current?.()
     unsubscribe.current = null
-    patch({ screen: 'login', clips: [], progress: 0, jobDone: false, jobId: '' })
+    // Drop the server session first, so the cookie cannot outlive the UI state.
+    await auth.logout().catch(() => {
+      // Already gone, or the API is down: clear the client either way.
+    })
+    resumed.current = false
+    patch({
+      screen: 'login',
+      user: null,
+      clips: [],
+      progress: 0,
+      jobDone: false,
+      jobId: '',
+      projects: [],
+    })
   }, [patch])
 
   const goNew = useCallback(() => patch({ screen: 'new', url: '', source: null }), [patch])
