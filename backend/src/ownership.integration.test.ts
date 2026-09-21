@@ -29,6 +29,7 @@ let ownedClips: typeof import('./ownership.ts')['ownedClips']
 let countActiveJobs: typeof import('./ownership.ts')['countActiveJobs']
 let countJobsSince: typeof import('./ownership.ts')['countJobsSince']
 let activeJob: typeof import('./ownership.ts')['activeJob']
+let quotaUsage: typeof import('./ownership.ts')['quotaUsage']
 
 let alice = ''
 let bob = ''
@@ -43,7 +44,7 @@ beforeAll(async () => {
 
   const dbMod = await import('./db/index.ts')
   ;({ db, users, videos, jobs, clips } = dbMod)
-  ;({ ownedJob, ownedClips, countActiveJobs, countJobsSince, activeJob } = await import(
+  ;({ ownedJob, ownedClips, countActiveJobs, countJobsSince, activeJob, quotaUsage } = await import(
     './ownership.ts',
   ))
 
@@ -180,5 +181,34 @@ maybe('every mid-pipeline status counts as in progress', async () => {
     await db.update(jobs).set({ status }).where(eq(jobs.id, aliceJob))
     expect((await activeJob(alice))?.id).toBe(aliceJob)
   }
+  await db.update(jobs).set({ status: 'pending' }).where(eq(jobs.id, aliceJob))
+})
+
+const DAY_AGO = () => new Date(Date.now() - 86_400_000)
+
+maybe('quota usage counts the jobs this user created in the window', async () => {
+  expect((await quotaUsage(alice, DAY_AGO())).used).toBe(1)
+})
+
+maybe('quota usage is per user, never the whole box', async () => {
+  expect((await quotaUsage(bob, DAY_AGO())).used).toBe(1)
+})
+
+maybe('it reports the oldest job, so the UI can say when a slot frees', async () => {
+  expect((await quotaUsage(alice, DAY_AGO())).oldestAt).toBeInstanceOf(Date)
+})
+
+maybe('an empty window means nothing used and no reset time', async () => {
+  const usage = await quotaUsage(alice, new Date(Date.now() + 86_400_000))
+  expect(usage.used).toBe(0)
+  expect(usage.oldestAt).toBeNull()
+})
+
+maybe('a cancelled job still counts against the daily allowance', async () => {
+  // Deliberate: by the time you cancel, the download has usually already spent
+  // the bandwidth and disk, so returning the slot would make the cap trivial to
+  // sidestep by starting and cancelling repeatedly.
+  await db.update(jobs).set({ status: 'cancelled' }).where(eq(jobs.id, aliceJob))
+  expect((await quotaUsage(alice, DAY_AGO())).used).toBe(1)
   await db.update(jobs).set({ status: 'pending' }).where(eq(jobs.id, aliceJob))
 })

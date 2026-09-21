@@ -79,6 +79,31 @@ export async function countActiveJobs(userId: string): Promise<number> {
   return Number(row?.n ?? 0)
 }
 
+/**
+ * How much of the daily allowance this user has spent, and when the oldest job
+ * in the window ages out of it.
+ *
+ * `oldestAt` exists so the UI can say when a slot actually frees up: the
+ * allowance is a ROLLING 24 hours, not a calendar month, so "resets on the 1st"
+ * would be a lie.
+ *
+ * Every job counts, cancelled ones included. By the time you cancel, the
+ * download has usually already spent the bandwidth and the disk, so returning
+ * the slot would make the cap trivial to sidestep by starting and cancelling.
+ */
+export async function quotaUsage(
+  userId: string,
+  since: Date,
+): Promise<{ used: number; oldestAt: Date | null }> {
+  const rows = await db
+    .select({ createdAt: jobs.createdAt })
+    .from(jobs)
+    .where(and(eq(jobs.userId, userId), gte(jobs.createdAt, since)))
+    .orderBy(jobs.createdAt)
+
+  return { used: rows.length, oldestAt: rows[0]?.createdAt ?? null }
+}
+
 export async function countJobsSince(userId: string, since: Date): Promise<number> {
   const [row] = await db
     .select({ n: count() })

@@ -16,7 +16,7 @@ const NAV: Array<{ label: string; screen: Screen }> = [
 
 export function Sidebar() {
   const { state, goNew, go, goResults, signOut } = useApp()
-  const { label, width } = quota(state.videosUsed)
+  const allowance = quota(state.quota)
   const job = jobIndicator(state)
 
   return (
@@ -57,13 +57,27 @@ export function Sidebar() {
         })}
       </div>
 
-      <div className="mt-auto rounded-[9px] bg-cream p-3">
-        <div className="mb-1.5 text-[12px] font-medium text-ink">{label}</div>
-        <Meter value={width} className="mb-2 h-1 rounded-[2px]" />
-        <p className="m-0 text-[11.5px] leading-[1.45] text-black/45">
-          Resets 1 Oct. Clips stay for 30 days.
-        </p>
-      </div>
+      {/*
+        Hidden until the server answers: showing a number before then is how this
+        block used to claim a full allowance after a video had been generated.
+      */}
+      {allowance.known && (
+        <div className="mt-auto rounded-[9px] bg-cream p-3">
+          <div
+            className={cn(
+              'mb-1.5 text-[12px] font-medium',
+              allowance.exhausted ? 'text-[#8C2F2F]' : 'text-ink',
+            )}
+          >
+            {allowance.label}
+          </div>
+          <Meter value={allowance.width} className="mb-2 h-1 rounded-[2px]" />
+          <p className="m-0 text-[11.5px] leading-[1.45] text-black/45">
+            {/* A rolling 24h window, not a calendar month. */}
+            {allowance.resetLabel || 'Clips stay for 30 days.'}
+          </p>
+        </div>
+      )}
 
       <button
         type="button"

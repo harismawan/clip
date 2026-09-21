@@ -27,7 +27,7 @@ function QuotaRow({
 
 export function PlanScreen() {
   const { state, say } = useApp()
-  const { usedLabel, width } = quota(state.videosUsed)
+  const { usedLabel, width } = quota(state.quota)
 
   return (
     <div className="min-h-0 flex-1 overflow-auto px-7 py-[26px]">

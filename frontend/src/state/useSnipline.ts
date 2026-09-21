@@ -4,7 +4,7 @@ import { LENGTHS, RATIOS, SAMPLE_URLS, TIMELINE_LEAD_IN, TIMELINE_SPAN } from '.
 import { loadPersisted, savePersisted } from '../lib/persist'
 import { api, auth, ApiError, type Me } from '../lib/api'
 import type { JobSnapshot } from '../lib/api'
-import type { Clip, JobStatus, Project, Ratio, Screen, Source, SourceKey } from '../types'
+import type { Clip, JobStatus, Project, QuotaDTO, Ratio, Screen, Source, SourceKey } from '../types'
 
 /** Smallest trim window, as a percentage of the visible timeline. */
 const MIN_TRIM_SPAN = 4
@@ -53,7 +53,12 @@ export interface SnipState {
    * once (ResultsScreen has two). Per-clip work has its own `regenerating` map.
    */
   pending: Pending
-  videosUsed: number
+  /**
+   * The server's daily allowance, or null until it answers. Replaces a local
+   * counter that started at zero every reload and so reported a full allowance
+   * after a video had already been generated.
+   */
+  quota: QuotaDTO | null
   /** Finished jobs, newest first. Loaded from the server. */
   projects: Project[]
   /** Identifies the run in flight, so a regenerate replaces its project. */
@@ -90,7 +95,7 @@ const initialState: SnipState = {
   jobStatus: null,
   jobError: null,
   pending: null,
-  videosUsed: 0,
+  quota: null,
   projects: [],
   jobId: '',
   clips: [],
@@ -287,6 +292,8 @@ export function useSnipline() {
          * absent from this browser's localStorage, and clearing site data loses
          * the id entirely.
          */
+        void loadQuota()
+
         const running = await api.activeJob().catch(() => null)
         if (cancelled) return
 
@@ -341,6 +348,20 @@ export function useSnipline() {
     },
     [fail],
   )
+
+  /**
+   * Refetch the allowance. Called at boot and after anything that spends or
+   * frees a slot, rather than adjusting a local number -- the rolling 24h window
+   * only exists on the server, and guessing it is what produced "3 of 3 videos
+   * left" after one had been generated.
+   */
+  const loadQuota = useCallback(async () => {
+    try {
+      patch({ quota: await api.quota() })
+    } catch {
+      // Secondary information; a failure here should not interrupt anything.
+    }
+  }, [patch])
 
   const loadProjects = useCallback(async () => {
     try {
@@ -445,7 +466,7 @@ export function useSnipline() {
       })
       setState((s) => ({
         ...s,
-        busy: false,
+        pending: null,
         screen: 'processing',
         jobId,
         progress: 0,
@@ -455,13 +476,25 @@ export function useSnipline() {
         jobDone: false,
         clips: [],
         filter: firstEnabled(s.formats),
-        videosUsed: s.videosUsed + 1,
       }))
       watchJob(jobId)
+      // A slot has just been spent; ask the server rather than decrementing.
+      void loadQuota()
     } catch (e) {
       fail(e)
     }
-  }, [patch, say, fail, watchJob, state.formats, state.source, state.count, state.lengthIdx, state.subs])
+  }, [
+    patch,
+    say,
+    fail,
+    watchJob,
+    loadQuota,
+    state.formats,
+    state.source,
+    state.count,
+    state.lengthIdx,
+    state.subs,
+  ])
 
   const cancelJob = useCallback(async () => {
     unsubscribe.current?.()
@@ -474,7 +507,6 @@ export function useSnipline() {
       progress: 0,
       jobDone: false,
       jobStatus: null,
-      videosUsed: Math.max(0, s.videosUsed - 1),
     }))
     if (id) await api.cancelJob(id).catch(() => {})
     patch({ pending: null })

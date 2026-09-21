@@ -139,6 +139,26 @@ export interface ProjectDTO {
   createdAt: number
 }
 
+/**
+ * The daily job allowance, as the server counts it.
+ *
+ * The client cannot compute this: it is a ROLLING 24-hour window over the user's
+ * jobs, enforced in quota.ts, and it survives reloads, other devices and
+ * cleared site data. A local counter was previously used and always drifted.
+ */
+export interface QuotaDTO {
+  /** Jobs created in the last 24 hours. */
+  used: number
+  /** QUOTA_JOBS_PER_DAY on the server. */
+  limit: number
+  remaining: number
+  /**
+   * When the oldest job leaves the window and a slot frees up, ISO. Null when
+   * nothing has been used, because there is nothing to wait for.
+   */
+  resetsAt: string | null
+}
+
 /** SSE payload on `GET /api/jobs/:id/events`. */
 export interface ProgressEvent {
   jobId: string

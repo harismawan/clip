@@ -3,14 +3,20 @@ import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
 import { eq, and, desc, inArray } from 'drizzle-orm'
 import { db, jobs, videos, clips, renders } from '../db/index.ts'
-import { ownedJob, activeJob, countActiveJobs, countJobsSince } from '../ownership.ts'
+import {
+  ownedJob,
+  activeJob,
+  quotaUsage,
+  countActiveJobs,
+  countJobsSince,
+} from '../ownership.ts'
 import { quotaVerdict } from '../quota.ts'
 import { env } from '../env.ts'
 import { toJobDTO, toSourceDTO } from '../mappers.ts'
 import { enqueueProcess, boss, PROCESS_QUEUE } from '../queue.ts'
 import { subscribe, ensureListening } from '../events.ts'
 import { isTerminal, RATIOS } from '../../../shared/types.ts'
-import type { ProjectDTO, Ratio } from '../../../shared/types.ts'
+import type { ProjectDTO, QuotaDTO, Ratio } from '../../../shared/types.ts'
 import { s3 } from '../s3.ts'
 
 const createBody = z.object({
@@ -84,6 +90,29 @@ jobsRoutes.get('/active', async (c) => {
   const found = await loadJob(c.get('user').id, job.id)
   if (!found) return c.json(null)
   return c.json(await toJobDTO(found.job, found.video, found.clipRows, found.renderRows))
+})
+
+/**
+ * The daily allowance, as the server counts it. Also above '/:id'.
+ *
+ * The UI used to keep its own counter, incrementing on job creation. It started
+ * at zero on every reload and knew nothing about jobs created on another device,
+ * so it reported three videos left after one had been generated. The server is
+ * the only place the rolling window actually exists.
+ */
+jobsRoutes.get('/quota', async (c) => {
+  const windowStart = new Date(Date.now() - 86_400_000)
+  const { used, oldestAt } = await quotaUsage(c.get('user').id, windowStart)
+
+  const quota: QuotaDTO = {
+    used,
+    limit: env.QUOTA_JOBS_PER_DAY,
+    remaining: Math.max(0, env.QUOTA_JOBS_PER_DAY - used),
+    // 24h after the oldest job in the window, that job drops out and its slot
+    // comes back. Null when nothing is spent.
+    resetsAt: oldestAt ? new Date(oldestAt.getTime() + 86_400_000).toISOString() : null,
+  }
+  return c.json(quota)
 })
 
 /** Full job state: options, source, clips, presigned render URLs. */

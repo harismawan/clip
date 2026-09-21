@@ -1,12 +1,56 @@
-import { EXPORT_SIZES, FREE_VIDEO_ALLOWANCE } from '../data/fixtures'
-import type { Clip, JobStatus, Ratio, Screen } from '../types'
+import { EXPORT_SIZES } from '../data/fixtures'
+import type { Clip, JobStatus, QuotaDTO, Ratio, Screen } from '../types'
 
-export function quota(videosUsed: number) {
-  return {
-    label: `${FREE_VIDEO_ALLOWANCE - videosUsed} of ${FREE_VIDEO_ALLOWANCE} free videos left`,
-    usedLabel: `${videosUsed} of ${FREE_VIDEO_ALLOWANCE}`,
-    width: `${Math.round((videosUsed / FREE_VIDEO_ALLOWANCE) * 100)}%`,
+/**
+ * The daily allowance, from the server's count.
+ *
+ * This used to take a local `videosUsed` counter that the app incremented itself.
+ * That counter started at zero on every reload, was never persisted and knew
+ * nothing about jobs created on another device -- so after generating one video
+ * the sidebar still said "3 of 3 free videos left". The allowance is a rolling
+ * 24-hour window enforced on the server (quota.ts), and only the server can
+ * count it.
+ *
+ * `known: false` while the fetch is in flight, so the UI can stay quiet rather
+ * than show a number that is probably wrong.
+ */
+export function quota(q: QuotaDTO | null) {
+  if (!q) {
+    return { known: false, label: '', usedLabel: '', width: '0%', resetLabel: '', exhausted: false }
   }
+
+  const remaining = Math.max(0, q.remaining)
+  const spent = Math.min(q.used, q.limit)
+
+  return {
+    known: true,
+    label: remaining === 0 ? 'No videos left today' : `${remaining} of ${q.limit} videos left today`,
+    usedLabel: `${q.used} of ${q.limit}`,
+    // Clamped: a limit lowered after jobs were created would otherwise push the
+    // meter past its track.
+    width: `${q.limit === 0 ? 100 : Math.round((spent / q.limit) * 100)}%`,
+    resetLabel: resetLabel(q.resetsAt),
+    exhausted: remaining === 0,
+  }
+}
+
+/**
+ * When the next slot frees up, in relative terms.
+ *
+ * Deliberately not a date: the window rolls continuously, so "resets on the 1st"
+ * (which this app used to claim) is simply untrue.
+ */
+function resetLabel(resetsAt: string | null): string {
+  if (!resetsAt) return ''
+
+  const ms = Date.parse(resetsAt) - Date.now()
+  if (Number.isNaN(ms)) return ''
+  // Already elapsed, or clock skew between server and browser.
+  if (ms <= 0) return 'A slot frees up any moment'
+
+  const minutes = Math.round(ms / 60_000)
+  if (minutes < 60) return `A slot frees up in ${minutes} min`
+  return `A slot frees up in ${Math.round(minutes / 60)}h`
 }
 
 export function formatsLabel(formats: Record<Ratio, boolean>): string {

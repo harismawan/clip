@@ -2,7 +2,7 @@
  * API client. The prototype made no network calls at all, so this is the whole
  * boundary between the app and the backend.
  */
-import type { Clip, Project, Ratio, Source, JobStatus } from '../types'
+import type { Clip, Project, QuotaDTO, Ratio, Source, JobStatus } from '../types'
 
 /**
  * Every path here is relative, and there is deliberately no configurable base
@@ -130,6 +130,12 @@ export const api = {
    * and clearing site data loses it.
    */
   activeJob: () => call<JobSnapshot | null>('/jobs/active'),
+
+  /**
+   * The daily allowance. Refetched after anything that spends or frees a slot,
+   * because the count lives on the server -- see quota() in lib/derive.ts.
+   */
+  quota: () => call<QuotaDTO>('/jobs/quota'),
 
   cancelJob: (id: string) => call<{ ok: boolean }>(`/jobs/${id}/cancel`, { method: 'POST' }),
 

@@ -1,5 +1,5 @@
 import { test, expect, describe } from 'bun:test'
-import { jobIndicator } from './derive'
+import { jobIndicator, quota } from './derive'
 
 /**
  * The one place that decides whether "a video is being processed" is worth
@@ -73,5 +73,69 @@ describe('jobIndicator', () => {
   test('percentage is clamped, so a bad frame cannot overflow the bar', () => {
     expect(jobIndicator({ ...active, progress: 140 }).percent).toBe(100)
     expect(jobIndicator({ ...active, progress: -5 }).percent).toBe(0)
+  })
+})
+
+/**
+ * The allowance shown in the sidebar. Driven entirely by the server's count,
+ * because the local counter it replaced reset to zero on every reload and
+ * reported "3 of 3 free videos left" after a video had already been generated.
+ */
+describe('quota', () => {
+  const at = (msFromNow: number) => new Date(Date.now() + msFromNow).toISOString()
+
+  test('before the server has answered, it does not invent a number', () => {
+    const q = quota(null)
+    expect(q.known).toBe(false)
+  })
+
+  test('it counts down from the limit the server reports', () => {
+    const q = quota({ used: 1, limit: 3, remaining: 2, resetsAt: at(3_600_000) })
+    expect(q.known).toBe(true)
+    expect(q.label).toBe('2 of 3 videos left today')
+  })
+
+  test('it does not use a hardcoded allowance', () => {
+    // QUOTA_JOBS_PER_DAY is configurable; 3 must not be baked in.
+    const q = quota({ used: 2, limit: 10, remaining: 8, resetsAt: at(3_600_000) })
+    expect(q.label).toBe('8 of 10 videos left today')
+  })
+
+  test('the used label reads as a fraction for the meter', () => {
+    expect(quota({ used: 1, limit: 3, remaining: 2, resetsAt: null }).usedLabel).toBe('1 of 3')
+  })
+
+  test('the bar width tracks what has been spent', () => {
+    expect(quota({ used: 1, limit: 3, remaining: 2, resetsAt: null }).width).toBe('33%')
+    expect(quota({ used: 3, limit: 3, remaining: 0, resetsAt: null }).width).toBe('100%')
+  })
+
+  test('being over the limit cannot overflow the bar', () => {
+    expect(quota({ used: 5, limit: 3, remaining: 0, resetsAt: null }).width).toBe('100%')
+  })
+
+  test('an exhausted allowance says so plainly', () => {
+    const q = quota({ used: 3, limit: 3, remaining: 0, resetsAt: at(3_600_000) })
+    expect(q.label).toBe('No videos left today')
+    expect(q.exhausted).toBe(true)
+  })
+
+  test('nothing spent means nothing to wait for', () => {
+    expect(quota({ used: 0, limit: 3, remaining: 3, resetsAt: null }).resetLabel).toBe('')
+  })
+
+  test('it explains the rolling window in hours, not a calendar date', () => {
+    const q = quota({ used: 1, limit: 3, remaining: 2, resetsAt: at(3 * 3_600_000) })
+    expect(q.resetLabel).toBe('A slot frees up in 3h')
+  })
+
+  test('under an hour is reported in minutes', () => {
+    const q = quota({ used: 1, limit: 3, remaining: 2, resetsAt: at(40 * 60_000) })
+    expect(q.resetLabel).toBe('A slot frees up in 40 min')
+  })
+
+  test('a reset time already past reads as imminent, not negative', () => {
+    const q = quota({ used: 1, limit: 3, remaining: 2, resetsAt: at(-60_000) })
+    expect(q.resetLabel).toBe('A slot frees up any moment')
   })
 })

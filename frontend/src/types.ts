@@ -25,6 +25,22 @@ export const APP_SCREENS = [
   'settings',
 ] as const satisfies readonly Screen[]
 
+/**
+ * The daily job allowance, as GET /api/jobs/quota reports it. Mirrors QuotaDTO
+ * in shared/types.ts; the frontend declares its own view of the wire types
+ * rather than importing across the workspace, as it does for JobSnapshot.
+ *
+ * Only the server can compute this: it is a rolling 24-hour window over the
+ * user's jobs, so it survives reloads and covers other devices.
+ */
+export interface QuotaDTO {
+  used: number
+  limit: number
+  remaining: number
+  /** ISO time the oldest job leaves the window, or null when nothing is spent. */
+  resetsAt: string | null
+}
+
 export type Ratio = '9:16' | '1:1' | '4:5'
 
 /** Which sample link the "try one of these" buttons load. */
