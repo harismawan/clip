@@ -1,5 +1,5 @@
 import { beforeEach, expect, test } from 'bun:test'
-import { clampTrim, firstEnabled, mergeJob, restored } from '../state/useSnipline'
+import { clampTrim, firstEnabled, mergeJob, needsCatchUp, restored } from '../state/useSnipline'
 import type { SnipState } from '../state/useSnipline'
 import type { JobSnapshot } from './api'
 import { ago } from './format'
@@ -195,4 +195,26 @@ test('mergeJob keeps every format a multi-ratio job did render', () => {
   const serverSent = { '9:16': true, '4:5': true } as unknown as JobSnapshot['formats']
   const next = mergeJob(base, snapshot({ formats: serverSent }))
   expect(next.formats).toEqual({ '9:16': true, '1:1': false, '4:5': true })
+})
+
+/**
+ * Returning to a backgrounded tab must not show a frozen progress bar. A
+ * throttled tab can have its stream die without ever firing onerror, so the
+ * reconnect never triggers and only a refocus catch-up closes the gap.
+ */
+test('needsCatchUp: a job still running wants a refetch', () => {
+  expect(needsCatchUp('job-1', 'rendering')).toBe(true)
+  expect(needsCatchUp('job-1', 'pending')).toBe(true)
+  expect(needsCatchUp('job-1', 'downloading')).toBe(true)
+})
+
+test('needsCatchUp: a finished job is left alone', () => {
+  expect(needsCatchUp('job-1', 'completed')).toBe(false)
+  expect(needsCatchUp('job-1', 'failed')).toBe(false)
+  expect(needsCatchUp('job-1', 'cancelled')).toBe(false)
+})
+
+test('needsCatchUp: nothing to refetch without a job', () => {
+  expect(needsCatchUp('', 'rendering')).toBe(false)
+  expect(needsCatchUp('job-1', null)).toBe(false)
 })

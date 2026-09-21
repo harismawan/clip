@@ -107,6 +107,81 @@ export const auth = {
   logout: () => call<void>('/auth/logout', { method: 'POST' }),
 }
 
+/** First retry after a second, doubling, capped so a long outage still recovers. */
+export function retryDelay(attempt: number): number {
+  return Math.min(15_000, 1000 * 2 ** attempt)
+}
+
+/** Injection seam: `bun test` has no EventSource, and real timers make tests slow. */
+export interface SubscribeDeps {
+  open: (url: string) => EventSource
+  setTimeout: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
+  clearTimeout: (handle: ReturnType<typeof setTimeout>) => void
+}
+
+/**
+ * Subscribe to job progress, reconnecting until the caller unsubscribes.
+ *
+ * No credentials in the URL: EventSource cannot set an Authorization header,
+ * which is why the shared token used to ride in the query string (and into
+ * nginx's access log), but it sends same-origin cookies natively.
+ *
+ * The reconnect is the point. An API restart, a sleeping laptop or a throttled
+ * background tab all drop the stream; closing it for good meant a job that
+ * finished afterwards stayed invisible until the user reloaded. `onError` fires
+ * on every drop so the caller can re-fetch the job and never sit on a stale bar.
+ */
+export function subscribe(
+  jobId: string,
+  onEvent: (e: ProgressEvent) => void,
+  onError?: () => void,
+  deps: SubscribeDeps = {
+    open: (url) => new EventSource(url),
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (h) => clearTimeout(h),
+  },
+): () => void {
+  let stopped = false
+  let attempt = 0
+  let es: EventSource | null = null
+  let timer: ReturnType<typeof setTimeout> | null = null
+
+  const connect = () => {
+    if (stopped) return
+    const source = deps.open(`/api/jobs/${jobId}/events`)
+    es = source
+
+    source.onmessage = (msg: MessageEvent) => {
+      if (!msg.data) return // keep-alive ping
+      let parsed: ProgressEvent
+      try {
+        parsed = JSON.parse(msg.data) as ProgressEvent
+      } catch {
+        return // A malformed frame must not tear down a working stream.
+      }
+      // A frame proves the connection works, so the next outage starts over at
+      // one second rather than inheriting a long backoff from an old blip.
+      attempt = 0
+      onEvent(parsed)
+    }
+
+    source.onerror = () => {
+      source.close()
+      if (stopped) return
+      onError?.()
+      timer = deps.setTimeout(connect, retryDelay(attempt++))
+    }
+  }
+
+  connect()
+
+  return () => {
+    stopped = true
+    if (timer) deps.clearTimeout(timer)
+    es?.close()
+  }
+}
+
 export const api = {
   analyze: (url: string) => call<Source>('/sources/analyze', {
     method: 'POST',
@@ -144,37 +219,12 @@ export const api = {
 
   projects: () => call<Project[]>('/projects'),
 
+  deleteProject: (id: string) =>
+    call<{ ok: boolean }>(`/projects/${id}`, { method: 'DELETE' }),
+
   redoClip: (clipId: string) => call<{ ok: boolean }>(`/clips/${clipId}/redo`, { method: 'POST' }),
 
-  /**
-   * Subscribe to job progress.
-   *
-   * No credentials in the URL: EventSource cannot set an Authorization header,
-   * which is why the shared token used to ride in the query string (and into
-   * nginx's access log), but it sends same-origin cookies natively.
-   */
-  subscribe(
-    jobId: string,
-    onEvent: (e: ProgressEvent) => void,
-    onError?: () => void,
-  ): () => void {
-    const es = new EventSource(`/api/jobs/${jobId}/events`)
-
-    es.onmessage = (msg) => {
-      if (!msg.data) return // keep-alive ping
-      try {
-        onEvent(JSON.parse(msg.data) as ProgressEvent)
-      } catch {
-        // A malformed frame must not tear down a working stream.
-      }
-    }
-    es.onerror = () => {
-      es.close()
-      onError?.()
-    }
-
-    return () => es.close()
-  },
+  subscribe,
 
   /**
    * Download one or more clips.

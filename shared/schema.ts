@@ -128,6 +128,13 @@ export const jobs = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     startedAt: timestamp('started_at', { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }),
+    /**
+     * Set when the user deletes the project. The row outlives the delete on
+     * purpose: quotaUsage counts rows, so a hard delete would hand back a daily
+     * slot and make the cap resettable by clearing your history. The clips and
+     * their S3 objects are really gone by the time this is stamped.
+     */
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
   (t) => [
     index('jobs_status_idx').on(t.status),

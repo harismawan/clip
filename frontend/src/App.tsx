@@ -1,5 +1,6 @@
 import type { ComponentType } from 'react'
 import { AppShell } from './components/AppShell'
+import { ClipPlayer } from './components/ClipPlayer'
 import { Toast } from './components/Toast'
 import { EditorScreen } from './screens/EditorScreen'
 import { LoginScreen } from './screens/LoginScreen'
@@ -44,6 +45,15 @@ export default function App() {
             <Inside />
           </AppShell>
         )}
+        {/*
+          Above every screen, so a clip stays watchable whether you got here
+          from the results grid or reopened an old project.
+        */}
+        <ClipPlayer
+          clip={snipline.state.clips.find((c) => c.id === state.playingClipId) ?? null}
+          ratio={state.filter}
+          onClose={snipline.closePlayer}
+        />
         {state.toast && <Toast message={state.toast} />}
       </div>
     </AppContext>
