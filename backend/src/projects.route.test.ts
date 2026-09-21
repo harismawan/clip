@@ -29,6 +29,7 @@ beforeAll(async () => {
       email: 'route@test.invalid',
       name: null,
       pictureUrl: null,
+      dailyJobLimit: null,
     })
     await next()
   })

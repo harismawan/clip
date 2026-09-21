@@ -50,6 +50,12 @@ export const users = pgTable(
     email: text('email').notNull(),
     name: text('name'),
     pictureUrl: text('picture_url'),
+    /**
+     * Per-user override for the rolling 24h job allowance. Null means "follow
+     * QUOTA_JOBS_PER_DAY", so the global default stays the one place the normal
+     * limit is configured and this column only ever names the exceptions.
+     */
+    dailyJobLimit: integer('daily_job_limit'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
   },

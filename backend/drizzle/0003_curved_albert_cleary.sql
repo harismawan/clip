@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "daily_job_limit" integer;
