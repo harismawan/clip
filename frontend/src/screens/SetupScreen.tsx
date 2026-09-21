@@ -1,13 +1,38 @@
+import { useState } from 'react'
 import { Button } from '../components/Button'
 import { OptionChip } from '../components/OptionChip'
 import { Toggle } from '../components/Toggle'
-import { CLIP_COUNTS, COUNT_HINTS, LENGTHS, RATIOS } from '../data/fixtures'
+import {
+  CLIP_COUNTS,
+  CLIP_COUNT_MAX,
+  CLIP_COUNT_MIN,
+  COUNT_HINTS,
+  LENGTHS,
+  RATIOS,
+} from '../data/fixtures'
 import { cn } from '../lib/cn'
+import { clampClipCount, etaForCount, quota } from '../lib/derive'
 import { useApp } from '../state/AppContext'
 
 export function SetupScreen() {
   const { state, setCount, setLengthIdx, toggleFormat, toggleSubs, startJob, goNew } = useApp()
   const src = state.source
+
+  /**
+   * Whether the custom box is showing. Local, not app state: it is a view mode,
+   * not something worth persisting. Seeded from the count itself so a saved
+   * custom value like 17 reopens the box after a reload instead of silently
+   * looking like no preset is selected.
+   */
+  const [customOpen, setCustomOpen] = useState(() => !CLIP_COUNTS.includes(state.count))
+  /**
+   * The box keeps its own draft so the field can be cleared and retyped. Writing
+   * straight to state.count would clamp an empty box to 1 on the first keystroke
+   * and fight the user.
+   */
+  const [draft, setDraft] = useState(String(state.count))
+
+  const allowance = quota(state.quota)
 
   // Reachable by restoring a stale `screen` from storage without a source.
   if (!src) {
@@ -63,7 +88,10 @@ export function SetupScreen() {
                     key={n}
                     type="button"
                     aria-pressed={selected}
-                    onClick={() => setCount(n)}
+                    onClick={() => {
+                      setCount(n)
+                      setCustomOpen(false)
+                    }}
                     className={cn(
                       'flex h-[60px] flex-1 cursor-pointer flex-col items-center justify-center gap-0.5 rounded-[9px] border-[1.5px] transition-colors',
                       selected ? 'border-violet bg-violet/5' : 'border-black/14 bg-white hover:bg-cream',
@@ -78,7 +106,68 @@ export function SetupScreen() {
                   </button>
                 )
               })}
+
+              <button
+                type="button"
+                aria-pressed={customOpen}
+                onClick={() => {
+                  setCustomOpen(true)
+                  setDraft(String(state.count))
+                }}
+                className={cn(
+                  'flex h-[60px] flex-1 cursor-pointer flex-col items-center justify-center gap-0.5 rounded-[9px] border-[1.5px] transition-colors',
+                  customOpen
+                    ? 'border-violet bg-violet/5'
+                    : 'border-black/14 bg-white hover:bg-cream',
+                )}
+              >
+                <span className="text-[15px] font-semibold text-ink">
+                  {customOpen ? state.count : '…'}
+                </span>
+                <span className={cn('text-[11px]', customOpen ? 'text-violet' : 'text-black/45')}>
+                  custom
+                </span>
+              </button>
             </div>
+
+            {customOpen && (
+              <div className="mt-2.5 flex items-center gap-2.5">
+                <label htmlFor="clip-count" className="text-[12px] text-black/55">
+                  Number of clips
+                </label>
+                <input
+                  id="clip-count"
+                  type="number"
+                  inputMode="numeric"
+                  min={CLIP_COUNT_MIN}
+                  max={CLIP_COUNT_MAX}
+                  value={draft}
+                  onChange={(e) => {
+                    setDraft(e.target.value)
+                    // Only commit a value that is already in range, so typing
+                    // through an intermediate state does not snap the number.
+                    const n = Number(e.target.value)
+                    if (
+                      Number.isInteger(n) &&
+                      n >= CLIP_COUNT_MIN &&
+                      n <= CLIP_COUNT_MAX
+                    ) {
+                      setCount(n)
+                    }
+                  }}
+                  onBlur={() => {
+                    // Leaving the field settles whatever is in it.
+                    const n = clampClipCount(draft)
+                    setDraft(String(n))
+                    setCount(n)
+                  }}
+                  className="h-9 w-[84px] rounded-[8px] border-[1.5px] border-ink px-2.5 text-[13px] text-ink outline-none focus:border-violet"
+                />
+                <span className="text-[11.5px] text-black/42">
+                  {CLIP_COUNT_MIN}–{CLIP_COUNT_MAX}
+                </span>
+              </div>
+            )}
           </fieldset>
 
           <div className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-[18px]">
@@ -143,8 +232,17 @@ export function SetupScreen() {
                 ? 'Queueing…'
                 : `Download & make ${state.count} clips`}
             </Button>
+            {/*
+              Both halves of this line used to lie: the ETA came from the server
+              computed at a fixed 12 clips, and "uses 1 of 3" was hardcoded text
+              that ignored the real allowance.
+            */}
             <span className="text-[12px] whitespace-nowrap text-black/42">
-              {src.eta} · uses 1 of 3
+              {etaForCount(src.durationSeconds, state.count)}
+              {allowance.known &&
+                (allowance.exhausted
+                  ? ' · no videos left today'
+                  : ` · uses 1 of ${allowance.remaining} left`)}
             </span>
           </div>
         </div>

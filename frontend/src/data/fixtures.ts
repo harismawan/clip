@@ -151,6 +151,22 @@ export const RATIOS: Ratio[] = ['9:16', '1:1', '4:5']
 
 export const CLIP_COUNTS = [6, 12, 24]
 
+/**
+ * Bounds for a custom clip count.
+ *
+ * These MIRROR the API's own validation in backend/src/routes/jobs.ts
+ * (`count: z.number().int().min(1).max(24)`). Keep them in step: the server is
+ * authoritative and will answer 400 for anything outside this range.
+ *
+ * The ceiling is not arbitrary -- every clip is a separate ffmpeg cut, reframe
+ * and subtitle burn on a 4-core box, and the daily quota counts jobs rather than
+ * clips, so an uncapped number would let one job hold the worker for hours.
+ */
+export const CLIP_COUNT_MIN = 1
+export const CLIP_COUNT_MAX = 24
+/** Used when the box is empty or unparseable, matching initialState.count. */
+export const CLIP_COUNT_DEFAULT = 12
+
 export const COUNT_HINTS = ['quick pass', 'recommended', 'go wide']
 
 /** Audio levels behind the trim track, as percentages of the strip height. */

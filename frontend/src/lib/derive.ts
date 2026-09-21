@@ -1,4 +1,9 @@
-import { EXPORT_SIZES } from '../data/fixtures'
+import {
+  CLIP_COUNT_DEFAULT,
+  CLIP_COUNT_MAX,
+  CLIP_COUNT_MIN,
+  EXPORT_SIZES,
+} from '../data/fixtures'
 import type { Clip, JobStatus, QuotaDTO, Ratio, Screen } from '../types'
 
 /**
@@ -15,8 +20,18 @@ import type { Clip, JobStatus, QuotaDTO, Ratio, Screen } from '../types'
  * than show a number that is probably wrong.
  */
 export function quota(q: QuotaDTO | null) {
+  // Same shape in both branches: callers destructure this, so a field that only
+  // exists once the server has answered is a type error at the call site.
   if (!q) {
-    return { known: false, label: '', usedLabel: '', width: '0%', resetLabel: '', exhausted: false }
+    return {
+      known: false,
+      label: '',
+      usedLabel: '',
+      width: '0%',
+      resetLabel: '',
+      exhausted: false,
+      remaining: 0,
+    }
   }
 
   const remaining = Math.max(0, q.remaining)
@@ -31,6 +46,7 @@ export function quota(q: QuotaDTO | null) {
     width: `${q.limit === 0 ? 100 : Math.round((spent / q.limit) * 100)}%`,
     resetLabel: resetLabel(q.resetsAt),
     exhausted: remaining === 0,
+    remaining,
   }
 }
 
@@ -152,4 +168,43 @@ export function jobIndicator(job: {
         target: 'processing',
       }
   }
+}
+
+/**
+ * Bring a typed clip count into the range the API will actually accept.
+ *
+ * Clamping here rather than letting the server refuse means a typo becomes a
+ * corrected number instead of a 400 after the user has already committed. An
+ * empty or unparseable box falls back to the default, so clearing the field to
+ * retype never means "zero clips".
+ */
+export function clampClipCount(raw: string | number): number {
+  const n = typeof raw === 'number' ? raw : Number(String(raw).trim())
+  // Number('') is 0 and Number('abc') is NaN; neither is a count the user meant.
+  if (!Number.isFinite(n) || String(raw).trim() === '') return CLIP_COUNT_DEFAULT
+  // Floor, not round: you cannot render part of a clip, and rounding 3.7 up to 4
+  // would silently add work nobody asked for.
+  return Math.min(CLIP_COUNT_MAX, Math.max(CLIP_COUNT_MIN, Math.floor(n)))
+}
+
+/**
+ * How long a job of `clipCount` clips is likely to take, as a display hint.
+ *
+ * MIRRORS estimateEta in shared/format.ts. The frontend does not import across
+ * the workspace, so the formula lives twice; derive.test.ts pins these values
+ * against the shared function's real output so drift shows up as a failure
+ * rather than a quietly wrong estimate.
+ *
+ * The setup screen needs its own copy because the server computes `source.eta`
+ * before a job exists, with clipCount defaulting to 12 -- so it never reacted to
+ * what the user actually picked, and a 24-clip job was under-estimated by five
+ * minutes.
+ */
+export function etaForCount(durationSeconds: number, clipCount: number): string {
+  const seconds = durationSeconds * 0.4 + clipCount * 25 + 60
+  const mins = Math.max(1, Math.round(seconds / 60))
+  if (mins < 60) return `~${mins} min`
+  const h = Math.floor(mins / 60)
+  const m = mins % 60
+  return m === 0 ? `~${h} hr` : `~${h} hr ${m} min`
 }
