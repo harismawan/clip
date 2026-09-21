@@ -50,6 +50,38 @@ export async function run(cmd: string[], opts: RunOptions = {}) {
 }
 
 /**
+ * Run to completion, buffering stdout as bytes.
+ *
+ * `run` decodes stdout as UTF-8, which silently mangles binary -- lone bytes
+ * become U+FFFD and the length changes. Raw PCM off an ffmpeg pipe needs this
+ * instead. stderr is still text, since that is where the error message is.
+ */
+export async function runBinary(cmd: string[], opts: RunOptions = {}) {
+  const proc = Bun.spawn(cmd, {
+    cwd: opts.cwd,
+    env: opts.env ? { ...process.env, ...opts.env } : process.env,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+
+  const timer = opts.timeoutMs
+    ? setTimeout(() => proc.kill('SIGKILL'), opts.timeoutMs)
+    : undefined
+
+  try {
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(proc.stdout).arrayBuffer(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ])
+    if (code !== 0) throw new ProcError(cmd, code, stderr)
+    return { stdout: Buffer.from(stdout), stderr }
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+/**
  * Run while streaming stderr line by line -- ffmpeg and yt-dlp both report
  * progress there, so buffering would hide it until the process ended.
  *

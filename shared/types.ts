@@ -107,11 +107,41 @@ export interface ClipDTO {
   sn: string
   /** Suggested caption for posting. */
   cap: string
-  /** Pre-wrapped burned-in subtitle line. */
+  /** Pre-wrapped two-line hook shown on the card. Distinct from the burned subs. */
   line: string
   status: 'pending' | 'rendering' | 'ready' | 'failed'
   renders: Partial<Record<Ratio, RenderDTO>>
+
+  /**
+   * Editor assets. All null for clips made before they existed, which is what
+   * lets the editor fall back to a placeholder instead of breaking.
+   */
+  proxyUrl: string | null
+  stripUrl: string | null
+  /** RMS levels 0-100 across the window, one per waveform bar. */
+  peaks: number[] | null
+  /** The stretch of source the proxy covers. Authoritative: do not recompute. */
+  win: { start: number; span: number } | null
 }
+
+/** One transcript line, as GET /api/clips/:id/transcript returns it. */
+export interface ClipTranscriptDTO {
+  segments: { start: number; end: number; text: string }[]
+}
+
+/**
+ * The stretch of source the editor timeline shows, in seconds.
+ *
+ * The worker encodes the proxy to these, and the trim a user can save is bounded
+ * by them. `frontend/src/data/fixtures.ts` mirrors them as TIMELINE_LEAD_IN and
+ * TIMELINE_SPAN -- the frontend declares its own view of wire constants rather
+ * than importing across the workspace, so keep the two in step.
+ */
+export const EDITOR_LEAD_IN = 30
+export const EDITOR_SPAN = 150
+
+/** Shortest trim worth rendering. Below this the cut has no room for a hook. */
+export const MIN_CLIP_SECONDS = 3
 
 export interface JobDTO {
   id: string

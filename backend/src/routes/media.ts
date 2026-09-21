@@ -23,7 +23,7 @@ import { getCookie } from 'hono/cookie'
 import { db, renders, clips } from '../db/index.ts'
 import { storage } from '../s3.ts'
 import { env } from '../env.ts'
-import { verifyMedia } from '../../../shared/mediaToken.ts'
+import { verifyMedia, type MediaKind } from '../../../shared/mediaToken.ts'
 import { slugify } from '../../../shared/format.ts'
 import { SESSION_COOKIE } from '../auth.ts'
 import { hashToken, isExpired } from '../session.ts'
@@ -75,6 +75,56 @@ export function parseRange(
   return { start, end }
 }
 
+const KINDS: MediaKind[] = ['video', 'thumb', 'proxy', 'strip']
+
+/** Narrow a query string to a known kind, so an unknown one cannot be signed for. */
+export function parseKind(raw: string | undefined): MediaKind | null {
+  return KINDS.find((k) => k === raw) ?? null
+}
+
+/** Where a kind's bytes live: its key, the backend holding it, and its size. */
+export interface Located {
+  key: string
+  backend: string
+  /** 0 when unknown, which disables range serving rather than guessing. */
+  size: number
+}
+
+/**
+ * Resolve a claim to an object.
+ *
+ * `video` and `thumb` hang off the renders row for a ratio; the editor assets
+ * hang off the clip itself, because they are ratio-independent -- one proxy of
+ * the source window serves every crop.
+ */
+export async function locate(
+  clipId: string,
+  ratio: string,
+  kind: MediaKind,
+): Promise<Located | null> {
+  if (kind === 'proxy' || kind === 'strip') {
+    const [clip] = await db.select().from(clips).where(eq(clips.id, clipId)).limit(1)
+    if (!clip) return null
+    const key = kind === 'proxy' ? clip.proxyKey : clip.stripKey
+    if (!key) return null
+    return {
+      key,
+      backend: clip.assetStorage,
+      size: kind === 'proxy' ? (clip.proxyBytes ?? 0) : 0,
+    }
+  }
+
+  const [render] = await db
+    .select()
+    .from(renders)
+    .where(and(eq(renders.clipId, clipId), eq(renders.ratio, ratio)))
+    .limit(1)
+
+  const key = kind === 'video' ? render?.s3Key : render?.thumbKey
+  if (!key || render.status !== 'ready') return null
+  return { key, backend: render.storage, size: render.sizeBytes ?? 0 }
+}
+
 /** The signed-in user id, or null. Media answers 404 rather than 401. */
 async function viewerId(c: Context): Promise<string | null> {
   const token = getCookie(c, SESSION_COOKIE) ?? ''
@@ -90,7 +140,13 @@ mediaRoutes.get('/:file', async (c) => {
   if (!m) return c.json({ error: 'Not found' }, 404)
 
   const [, clipId, ext] = m
-  const kind = ext.toLowerCase() === 'mp4' ? 'video' : 'thumb'
+  const isMp4 = ext.toLowerCase() === 'mp4'
+  /**
+   * `kind` is explicit now that two kinds share the .mp4 extension. Falling back
+   * to the extension keeps URLs signed before the editor assets existed valid
+   * for the rest of their six-hour life.
+   */
+  const kind = parseKind(c.req.query('kind')) ?? (isMp4 ? 'video' : 'thumb')
   const ratio = c.req.query('ratio') ?? '9:16'
   const exp = Number(c.req.query('exp'))
   const sig = c.req.query('sig') ?? ''
@@ -106,17 +162,12 @@ mediaRoutes.get('/:file', async (c) => {
     return c.json({ error: 'Not found' }, 404)
   }
 
-  const [render] = await db
-    .select()
-    .from(renders)
-    .where(and(eq(renders.clipId, clipId), eq(renders.ratio, ratio)))
-    .limit(1)
-
-  const key = kind === 'video' ? render?.s3Key : render?.thumbKey
-  if (!key || render.status !== 'ready') return c.json({ error: 'Not ready' }, 404)
+  const located = await locate(clipId, ratio, kind)
+  if (!located) return c.json({ error: 'Not ready' }, 404)
+  const { key, backend, size } = located
 
   const headers: Record<string, string> = {
-    'Content-Type': kind === 'video' ? 'video/mp4' : 'image/jpeg',
+    'Content-Type': isMp4 ? 'video/mp4' : 'image/jpeg',
     // Signed URLs already expire; caching until then avoids re-streaming a
     // thumbnail on every grid render.
     'Cache-Control': 'private, max-age=3600',
@@ -136,8 +187,7 @@ mediaRoutes.get('/:file', async (c) => {
    * resolved against a length, and without Accept-Ranges the browser will not
    * ask for one anyway. Thumbnails are small enough that it never matters.
    */
-  const size = render.sizeBytes ?? 0
-  const rangeable = kind === 'video' && size > 0
+  const rangeable = isMp4 && size > 0
   const wanted = rangeable ? parseRange(c.req.header('range'), size) : null
 
   if (wanted === 'unsatisfiable') {
@@ -150,7 +200,7 @@ mediaRoutes.get('/:file', async (c) => {
   if (rangeable) headers['Accept-Ranges'] = 'bytes'
 
   if (wanted) {
-    const body = await (await storage.get(render.storage)).getStream(
+    const body = await (await storage.get(backend)).getStream(
       key,
       `bytes=${wanted.start}-${wanted.end}`,
     )
@@ -164,7 +214,7 @@ mediaRoutes.get('/:file', async (c) => {
     })
   }
 
-  const body = await (await storage.get(render.storage)).getStream(key)
+  const body = await (await storage.get(backend)).getStream(key)
   if (rangeable) headers['Content-Length'] = String(size)
 
   return new Response(Readable.toWeb(Readable.from(body as any)) as ReadableStream, { headers })

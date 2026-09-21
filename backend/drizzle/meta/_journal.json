@@ -43,6 +43,13 @@
       "when": 1789981196589,
       "tag": "0005_wooden_darkhawk",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790008247133,
+      "tag": "0006_silent_the_hand",
+      "breakpoints": true
     }
   ]
 }

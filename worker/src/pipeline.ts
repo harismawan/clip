@@ -15,6 +15,7 @@ import { assertYtdlpFresh, assertDiskSpace, download, probe } from '../../shared
 import { transcribe } from './stages/transcribe.ts'
 import { analyze } from './stages/analyze.ts'
 import { renderClip } from './stages/render.ts'
+import { buildEditorAssets, sizeOf } from './stages/editorAssets.ts'
 import { validateRanges, textInRange } from './ranges.ts'
 import { wrapHookLine } from './srt.ts'
 import { ownsScratch } from './scratch.ts'
@@ -134,6 +135,8 @@ export async function processJob(jobId: string): Promise<void> {
         burnSubtitles: job.burnSubtitles,
         store,
       })
+
+      await storeEditorAssets(clip, sourcePath, workDir, video.durationSeconds, store)
     }
 
     // --- 5. finalize ---------------------------------------------------------
@@ -270,6 +273,60 @@ async function ensureTranscript(
   return result.segments
 }
 
+/**
+ * Build and store the editor's proxy, filmstrip and waveform for one clip.
+ *
+ * Best effort, by design. These exist so the editor screen has something to
+ * play; losing them costs a placeholder and a note, and failing a forty-minute
+ * render over a filmstrip would be absurd. The same posture the sidecar SRT
+ * upload takes.
+ */
+async function storeEditorAssets(
+  clip: typeof clips.$inferSelect,
+  sourcePath: string,
+  workDir: string,
+  durationSeconds: number,
+  store: { id: string; s3: S3 },
+): Promise<void> {
+  try {
+    const built = await buildEditorAssets({
+      sourcePath,
+      workDir,
+      stem: `clip-${clip.idx}`,
+      startSeconds: clip.startSeconds,
+      endSeconds: clip.endSeconds,
+      durationSeconds,
+    })
+
+    const proxyKey = keys.proxy(clip.jobId, clip.id)
+    const stripKey = keys.strip(clip.jobId, clip.id)
+
+    await store.s3.upload(proxyKey, await Bun.file(built.proxyPath).bytes(), 'video/mp4')
+    await store.s3.upload(stripKey, await Bun.file(built.stripPath).bytes(), 'image/jpeg')
+
+    await db
+      .update(clips)
+      .set({
+        proxyKey,
+        proxyBytes: await sizeOf(built.proxyPath),
+        stripKey,
+        peaks: built.peaks,
+        windowStart: built.window.start,
+        windowSpan: built.window.span,
+        // Written with the keys, so the two can never disagree about where they are.
+        assetStorage: store.id,
+      })
+      .where(eq(clips.id, clip.id))
+
+    await Promise.all([
+      rm(built.proxyPath, { force: true }).catch(() => {}),
+      rm(built.stripPath, { force: true }).catch(() => {}),
+    ])
+  } catch (e) {
+    console.warn(`[pipeline] editor assets for clip ${clip.id} failed:`, (e as Error).message)
+  }
+}
+
 /** Delete scratch and forget the cached download path. */
 async function cleanup(workDir: string, videoId: string): Promise<void> {
   await rm(workDir, { recursive: true, force: true }).catch(() => {})
@@ -316,6 +373,14 @@ export async function recutClip(jobId: string, clipId: string): Promise<void> {
     const objects = old.flatMap((r) =>
       [r.s3Key, r.thumbKey].filter(Boolean).map((key) => ({ storage: r.storage, key: key as string })),
     )
+    // The editor assets go too. A re-cut usually follows a saved trim, which
+    // moves clip.startSeconds and therefore moves the window they cover, so
+    // keeping them would leave the editor scrubbing the wrong stretch of source.
+    objects.push(
+      ...[clip.proxyKey, clip.stripKey]
+        .filter(Boolean)
+        .map((key) => ({ storage: clip.assetStorage, key: key as string })),
+    )
     if (objects.length) await storage.deleteMany(objects)
     await db.delete(renders).where(eq(renders.clipId, clipId))
 
@@ -329,6 +394,8 @@ export async function recutClip(jobId: string, clipId: string): Promise<void> {
       burnSubtitles: job.burnSubtitles,
       store,
     })
+
+    await storeEditorAssets(clip, sourcePath, workDir, video.durationSeconds, store)
   } catch (e) {
     const message = (e as Error).message ?? 'Unknown error'
     console.error(`[pipeline] recut ${clipId} failed:`, message)
