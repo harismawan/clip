@@ -23,7 +23,7 @@ export function NewVideoScreen() {
       </p>
 
       <form
-        className="flex w-full max-w-[560px] flex-col gap-2.5 sm:flex-row"
+        className="flex w-full max-w-[720px] flex-col gap-2.5 sm:flex-row"
         onSubmit={(e) => {
           e.preventDefault()
           analyze()
