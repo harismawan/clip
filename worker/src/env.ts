@@ -15,6 +15,10 @@ const schema = z.object({
     .transform((v) => v === 'true'),
 
   OPENROUTER_API_KEY: z.string().min(1, 'OPENROUTER_API_KEY is required to pick clip ranges'),
+  OPENROUTER_BASE_URL: z
+    .string()
+    .default('https://openrouter.ai/api/v1')
+    .transform((v) => v.replace(/\/+$/, '')),
   OPENROUTER_MODEL: z.string().default('google/gemini-2.5-flash'),
 
   WORK_DIR: z.string().default('./.work'),

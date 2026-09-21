@@ -101,7 +101,7 @@ export async function analyze(opts: AnalyzeOptions): Promise<Candidate[]> {
     `- Write title, caption and line in the same language as the transcript.`,
   ].join('\n')
 
-  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+  const res = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
     method: 'POST',
     signal: opts.signal,
     headers: {
