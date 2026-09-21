@@ -129,6 +129,7 @@ maybe(
         { start: 5, end: 8, text: 'this is a test' },
       ],
       burnSubtitles: true,
+      store: await schema.storage.active(),
     })
 
     const [render] = await db
@@ -144,8 +145,9 @@ maybe(
     expect(render.s3Key).toBeTruthy()
     expect(render.thumbKey).toBeTruthy()
 
-    // The uploads must actually be retrievable, not merely recorded.
-    const body = await schema.s3.getStream(render.s3Key!)
+    // The uploads must actually be retrievable, not merely recorded -- and from
+    // the backend the row names, which is the whole point of routing per object.
+    const body = await (await schema.storage.get(render.storage)).getStream(render.s3Key!)
     expect(body).toBeTruthy()
 
     const [after] = await db.select().from(schema.clips).where(eq(schema.clips.id, clipId))

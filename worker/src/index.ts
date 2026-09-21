@@ -9,7 +9,7 @@ import { mkdir } from 'node:fs/promises'
 import { makeBoss, PROCESS_QUEUE, RECUT_QUEUE } from '../../shared/queue.ts'
 import type { ProcessJobPayload, RecutJobPayload } from '../../shared/queue.ts'
 import { env } from './env.ts'
-import { pool } from './db.ts'
+import { pool, storage, assertStorageReady } from './db.ts'
 import { processJob, recutClip } from './pipeline.ts'
 
 const boss = makeBoss(env.DATABASE_URL)
@@ -17,6 +17,17 @@ const boss = makeBoss(env.DATABASE_URL)
 boss.on('error', (err) => console.error('[boss]', err))
 
 await mkdir(env.WORK_DIR, { recursive: true })
+
+// Before claiming any work: a worker with nowhere to put its output cannot do
+// its job, and finding that out after a 40-minute transcription is the failure
+// assertWhisperAvailable() already exists to prevent.
+try {
+  await assertStorageReady()
+} catch (e) {
+  console.error(`[worker] ${(e as Error).message}`)
+  process.exit(1)
+}
+
 await boss.start()
 await boss.createQueue(PROCESS_QUEUE)
 await boss.createQueue(RECUT_QUEUE)
@@ -45,7 +56,8 @@ await boss.work<RecutJobPayload>(
 )
 
 console.log(
-  `worker ready (concurrency ${env.WORKER_CONCURRENCY}, whisper "${env.WHISPER_MODEL}", work dir ${env.WORK_DIR})`,
+  `worker ready (storage "${(await storage.active()).id}", whisper "${env.WHISPER_MODEL}", ` +
+    `work dir ${env.WORK_DIR})`,
 )
 
 let shuttingDown = false

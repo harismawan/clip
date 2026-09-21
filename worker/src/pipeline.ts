@@ -17,10 +17,11 @@ import { analyze } from './stages/analyze.ts'
 import { renderClip } from './stages/render.ts'
 import { validateRanges, textInRange } from './ranges.ts'
 import { wrapHookLine } from './srt.ts'
-import { keys, s3 } from './db.ts'
+import { keys, storage } from './db.ts'
 import { RATIOS } from '../../shared/types.ts'
 import type { Ratio } from '../../shared/types.ts'
 import type { TranscriptSegment } from '../../shared/schema.ts'
+import type { S3 } from '../../shared/s3.ts'
 
 export async function processJob(jobId: string): Promise<void> {
   const workDir = join(env.WORK_DIR, jobId)
@@ -32,6 +33,12 @@ export async function processJob(jobId: string): Promise<void> {
 
     const [video] = await db.select().from(videos).where(eq(videos.id, job.videoId)).limit(1)
     if (!video) throw new Error('Source video row is missing')
+
+    // Resolved once, before the download: a job that has nowhere to put its
+    // output should fail in a second rather than after 40 minutes of work. One
+    // backend per job also means flipping the active target mid-render leaves
+    // this job whole instead of scattered across two buckets.
+    const store = await storage.active()
 
     await setStatus(jobId, {
       status: 'downloading',
@@ -49,7 +56,14 @@ export async function processJob(jobId: string): Promise<void> {
 
     // --- 2. transcribe -------------------------------------------------------
     await assertNotCancelled(jobId)
-    const segments = await ensureTranscript(jobId, video.id, sourcePath, video.durationSeconds, workDir)
+    const segments = await ensureTranscript(
+      jobId,
+      video.id,
+      sourcePath,
+      video.durationSeconds,
+      workDir,
+      store,
+    )
 
     // --- 3. analyse ----------------------------------------------------------
     await assertNotCancelled(jobId)
@@ -117,6 +131,7 @@ export async function processJob(jobId: string): Promise<void> {
         ratios,
         segments,
         burnSubtitles: job.burnSubtitles,
+        store,
       })
     }
 
@@ -193,6 +208,7 @@ async function ensureTranscript(
   sourcePath: string,
   durationSeconds: number,
   workDir: string,
+  store: { id: string; s3: S3 },
 ): Promise<TranscriptSegment[]> {
   const [existing] = await db
     .select()
@@ -215,17 +231,21 @@ async function ensureTranscript(
   let srtKey: string | null = null
   if (result.srt.trim()) {
     srtKey = keys.srt(videoId)
-    await s3.upload(srtKey, Buffer.from(result.srt, 'utf8'), 'application/x-subrip').catch((e) => {
+    await store.s3
+      .upload(srtKey, Buffer.from(result.srt, 'utf8'), 'application/x-subrip')
+      .catch((e: Error) => {
       // The sidecar SRT is a convenience; losing it must not fail the job.
-      console.warn('[pipeline] could not upload transcript SRT:', e.message)
-      srtKey = null
-    })
+        console.warn('[pipeline] could not upload transcript SRT:', e.message)
+        srtKey = null
+      })
   }
 
   await db.insert(transcripts).values({
     videoId,
     language: result.language,
     srtKey,
+    // Written with the key, so the two can never disagree about where it is.
+    storage: store.id,
     segments: result.segments,
   })
 
@@ -265,13 +285,20 @@ export async function recutClip(jobId: string, clipId: string): Promise<void> {
 
     if (!transcript) throw new Error('No transcript for this video; regenerate the job instead.')
 
+    const store = await storage.active()
+
     await mkdir(workDir, { recursive: true })
     const sourcePath = await ensureDownloaded(jobId, video, workDir)
 
-    // Drop the previous renders, in storage as well as in the database.
+    // Drop the previous renders, in storage as well as in the database. Each row
+    // carries its own backend: an old render may predate the current write
+    // target, and aiming its keys at the wrong bucket would delete nothing while
+    // reporting success.
     const old = await db.select().from(renders).where(eq(renders.clipId, clipId))
-    const objects = old.flatMap((r) => [r.s3Key, r.thumbKey].filter(Boolean) as string[])
-    if (objects.length) await s3.deleteMany(objects).catch(() => {})
+    const objects = old.flatMap((r) =>
+      [r.s3Key, r.thumbKey].filter(Boolean).map((key) => ({ storage: r.storage, key: key as string })),
+    )
+    if (objects.length) await storage.deleteMany(objects)
     await db.delete(renders).where(eq(renders.clipId, clipId))
 
     await renderClip({
@@ -282,6 +309,7 @@ export async function recutClip(jobId: string, clipId: string): Promise<void> {
       ratios: RATIOS.filter((r) => (job.formats as Record<string, boolean>)[r]) as Ratio[],
       segments: transcript.segments,
       burnSubtitles: job.burnSubtitles,
+      store,
     })
   } catch (e) {
     const message = (e as Error).message ?? 'Unknown error'

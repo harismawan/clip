@@ -54,7 +54,7 @@ async function main() {
   // Imported here, not at the top: env.ts exits the process when the
   // environment is unset, which would make parseArgs untestable.
   const { db } = await import('../src/db/index.ts')
-  const { s3 } = await import('../src/s3.ts')
+  const { storage } = await import('../src/s3.ts')
 
   /** Rendered bytes and job counts per user, in one pass rather than per row. */
   const totals = await db
@@ -113,7 +113,11 @@ async function main() {
       : []
     const renderRows = clipRows.length
       ? await db
-          .select({ s3Key: renders.s3Key, thumbKey: renders.thumbKey })
+          .select({
+            s3Key: renders.s3Key,
+            thumbKey: renders.thumbKey,
+            storage: renders.storage,
+          })
           .from(renders)
           .where(
             inArray(
@@ -122,7 +126,14 @@ async function main() {
             ),
           )
       : []
-    const objects = renderRows.flatMap((r) => [r.s3Key, r.thumbKey].filter(Boolean) as string[])
+    // Each row names its own backend: an account can hold clips written before
+    // and after the write target moved, and a flat key list would aim half of
+    // them at the wrong bucket -- deleting nothing while reporting success.
+    const objects = renderRows.flatMap((r) =>
+      [r.s3Key, r.thumbKey]
+        .filter(Boolean)
+        .map((key) => ({ storage: r.storage, key: key as string })),
+    )
 
     if (!args.confirmed) {
       console.log(
@@ -133,13 +144,10 @@ async function main() {
       return
     }
 
-    if (objects.length) {
-      await s3.deleteMany(objects).catch((e) => {
-        // Say so rather than swallow it: the rows are about to go, so anything
-        // left behind here is an orphan nobody can find again from the database.
-        console.error(`[users] some files were not deleted, they are now orphans: ${e.message}`)
-      })
-    }
+    // deleteMany reports per backend and carries on: the rows are about to go,
+    // so anything left behind is an orphan nobody can find from the database
+    // again -- but one unreachable backend must not abort the whole delete.
+    if (objects.length) await storage.deleteMany(objects)
     // One delete: sessions, jobs, clips and renders all cascade from the user.
     await db.delete(users).where(eq(users.id, user.id))
     console.log(`Deleted ${user.email}: ${ids.length} project(s), ${objects.length} file(s).`)

@@ -10,6 +10,7 @@
  * of the most expensive stage in the pipeline, and two users clipping the same
  * link should share it.
  */
+import { sql } from 'drizzle-orm'
 import {
   pgTable,
   pgEnum,
@@ -22,6 +23,7 @@ import {
   jsonb,
   timestamp,
   index,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core'
 
 export const jobStatus = pgEnum('job_status', [
@@ -37,6 +39,39 @@ export const jobStatus = pgEnum('job_status', [
 
 export const clipStatus = pgEnum('clip_status', ['pending', 'rendering', 'ready', 'failed'])
 export const renderStatus = pgEnum('render_status', ['pending', 'rendering', 'ready', 'failed'])
+
+/**
+ * Where objects can live. A list, not a single endpoint, so a new bucket can be
+ * added without retiring the one already holding clips.
+ *
+ * Exactly one row is the active write target; every row stays readable forever,
+ * which is what lets a clip rendered in the MinIO era keep playing after the
+ * writes have moved to S3. The row that owns a key records which backend holds
+ * it (see `renders.storage`), so a read never has to guess or probe.
+ *
+ * Deliberately holds NO credentials. Access keys live in the environment, one
+ * pair per id, so a database dump cannot carry object-storage credentials --
+ * the same reason `sessions` stores a hash rather than the token.
+ */
+export const storageBackends = pgTable(
+  'storage_backends',
+  {
+    /** Also derives the env var names, so it is restricted to [a-z0-9-]. */
+    id: text('id').primaryKey(),
+    label: text('label').notNull(),
+    /** Null for real AWS, which is addressed by region rather than endpoint. */
+    endpoint: text('endpoint'),
+    region: text('region').notNull(),
+    bucket: text('bucket').notNull(),
+    /** MinIO addresses buckets by path; AWS uses virtual-host style. */
+    pathStyle: boolean('path_style').notNull(),
+    isActive: boolean('is_active').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  // One write target, enforced here rather than by the script that flips it: a
+  // partial unique index makes "two actives" unrepresentable even by hand.
+  (t) => [uniqueIndex('storage_one_active').on(t.isActive).where(sql`${t.isActive}`)],
+)
 
 /**
  * A signed-in person. Keyed on Google's `sub` claim rather than email: an
@@ -169,6 +204,11 @@ export const transcripts = pgTable(
       .references(() => videos.id, { onDelete: 'cascade' }),
     language: text('language'),
     srtKey: text('srt_key'),
+    /** Which backend holds srtKey. See renders.storage. */
+    storage: text('storage')
+      .notNull()
+      .default('minio')
+      .references(() => storageBackends.id),
     segments: jsonb('segments').$type<TranscriptSegment[]>().notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -220,6 +260,16 @@ export const renders = pgTable(
     width: integer('width'),
     height: integer('height'),
     sizeBytes: integer('size_bytes'),
+    /**
+     * Which backend holds s3Key and thumbKey. Written in the same statement as
+     * those keys, so a key and its location cannot disagree. The 'minio'
+     * default is a fact about history, not a guess: every row that predates the
+     * registry came from MinIO.
+     */
+    storage: text('storage')
+      .notNull()
+      .default('minio')
+      .references(() => storageBackends.id),
     durationSeconds: doublePrecision('duration_seconds'),
     status: renderStatus('status').notNull().default('pending'),
     error: text('error'),

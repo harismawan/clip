@@ -9,6 +9,7 @@
     "test": "bun test",
     "quota": "bun --env-file=../.env scripts/quota.ts",
     "users": "bun --env-file=../.env scripts/users.ts",
+    "storage": "bun --env-file=../.env scripts/storage.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "bun --env-file=../.env src/db/migrate.ts",
     "db:push": "bun --env-file=../.env x drizzle-kit push",

@@ -21,7 +21,7 @@ import { Readable } from 'node:stream'
 import { and, eq } from 'drizzle-orm'
 import { getCookie } from 'hono/cookie'
 import { db, renders, clips } from '../db/index.ts'
-import { s3 } from '../s3.ts'
+import { storage } from '../s3.ts'
 import { env } from '../env.ts'
 import { verifyMedia } from '../../../shared/mediaToken.ts'
 import { slugify } from '../../../shared/format.ts'
@@ -150,7 +150,10 @@ mediaRoutes.get('/:file', async (c) => {
   if (rangeable) headers['Accept-Ranges'] = 'bytes'
 
   if (wanted) {
-    const body = await s3.getStream(key, `bytes=${wanted.start}-${wanted.end}`)
+    const body = await (await storage.get(render.storage)).getStream(
+      key,
+      `bytes=${wanted.start}-${wanted.end}`,
+    )
     return new Response(Readable.toWeb(Readable.from(body as any)) as ReadableStream, {
       status: 206,
       headers: {
@@ -161,7 +164,7 @@ mediaRoutes.get('/:file', async (c) => {
     })
   }
 
-  const body = await s3.getStream(key)
+  const body = await (await storage.get(render.storage)).getStream(key)
   if (rangeable) headers['Content-Length'] = String(size)
 
   return new Response(Readable.toWeb(Readable.from(body as any)) as ReadableStream, { headers })

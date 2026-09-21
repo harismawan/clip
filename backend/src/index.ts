@@ -7,6 +7,7 @@ import { lookupSession } from './sessionStore.ts'
 import { authRoutes, authSessionRoutes } from './routes/auth.ts'
 import { startQueue } from './queue.ts'
 import { ensureListening } from './events.ts'
+import { warnAboutStorage } from './s3.ts'
 import { sources } from './routes/sources.ts'
 import { jobsRoutes } from './routes/jobs.ts'
 import { clipsRoutes, downloadsRoutes } from './routes/clips.ts'
@@ -79,6 +80,9 @@ app.notFound((c) => c.json({ error: 'Not found' }, 404))
 
 await startQueue()
 await ensureListening()
+// Warn, never exit: the API only reads, so a backend it cannot reach costs
+// those clips and nothing else. The worker is stricter about the write target.
+await warnAboutStorage()
 
 console.log(`api listening on http://${env.HOST}:${env.PORT}`)
 
