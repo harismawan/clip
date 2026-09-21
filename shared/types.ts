@@ -152,6 +152,9 @@ export interface QuotaDTO {
   /** QUOTA_JOBS_PER_DAY on the server. */
   limit: number
   remaining: number
+  /** Rendered bytes held, and the cap. Deleting a project lowers the first. */
+  storageBytes: number
+  storageLimitBytes: number
   /**
    * When the oldest job leaves the window and a slot frees up, ISO. Null when
    * nothing has been used, because there is nothing to wait for.

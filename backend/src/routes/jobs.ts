@@ -9,6 +9,7 @@ import {
   quotaUsage,
   countActiveJobs,
   countJobsSince,
+  storageUsage,
 } from '../ownership.ts'
 import { quotaVerdict } from '../quota.ts'
 import { env } from '../env.ts'
@@ -51,6 +52,8 @@ jobsRoutes.post('/', async (c) => {
     // A per-user override exists so one account can be raised (or cut) without
     // moving the global default for everyone. See backend/scripts/quota.ts.
     dailyLimit: user.dailyJobLimit ?? env.QUOTA_JOBS_PER_DAY,
+    storageBytes: await storageUsage(user.id),
+    storageLimitBytes: user.storageLimitBytes ?? env.QUOTA_STORAGE_GB * 1024 ** 3,
   })
   if (refusal) return c.json({ error: refusal.message }, refusal.status)
 
@@ -104,13 +107,16 @@ jobsRoutes.get('/active', async (c) => {
  */
 jobsRoutes.get('/quota', async (c) => {
   const windowStart = new Date(Date.now() - 86_400_000)
-  const { used, oldestAt } = await quotaUsage(c.get('user').id, windowStart)
-  const limit = c.get('user').dailyJobLimit ?? env.QUOTA_JOBS_PER_DAY
+  const user = c.get('user')
+  const { used, oldestAt } = await quotaUsage(user.id, windowStart)
+  const limit = user.dailyJobLimit ?? env.QUOTA_JOBS_PER_DAY
 
   const quota: QuotaDTO = {
     used,
     limit,
     remaining: Math.max(0, limit - used),
+    storageBytes: await storageUsage(user.id),
+    storageLimitBytes: user.storageLimitBytes ?? env.QUOTA_STORAGE_GB * 1024 ** 3,
     // 24h after the oldest job in the window, that job drops out and its slot
     // comes back. Null when nothing is spent.
     resetsAt: oldestAt ? new Date(oldestAt.getTime() + 86_400_000).toISOString() : null,

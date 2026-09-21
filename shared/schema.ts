@@ -16,6 +16,7 @@ import {
   uuid,
   text,
   integer,
+  bigint,
   doublePrecision,
   boolean,
   jsonb,
@@ -56,6 +57,11 @@ export const users = pgTable(
      * limit is configured and this column only ever names the exceptions.
      */
     dailyJobLimit: integer('daily_job_limit'),
+    /**
+     * Per-user override for the rendered-bytes cap, null to follow
+     * QUOTA_STORAGE_GB. bigint because 5 GB in bytes overflows int4.
+     */
+    storageLimitBytes: bigint('storage_limit_bytes', { mode: 'number' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
   },

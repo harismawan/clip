@@ -37,6 +37,9 @@ export interface QuotaDTO {
   used: number
   limit: number
   remaining: number
+  /** Rendered bytes held, and the cap. Deleting a project lowers the first. */
+  storageBytes: number
+  storageLimitBytes: number
   /** ISO time the oldest job leaves the window, or null when nothing is spent. */
   resetsAt: string | null
 }

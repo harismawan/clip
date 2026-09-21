@@ -4,6 +4,7 @@ import {
   CLIP_COUNT_MIN,
   EXPORT_SIZES,
 } from '../data/fixtures'
+import { fmtBytes } from './format'
 import type { Clip, JobStatus, QuotaDTO, Ratio, Screen } from '../types'
 
 /**
@@ -47,6 +48,30 @@ export function quota(q: QuotaDTO | null) {
     resetLabel: resetLabel(q.resetsAt),
     exhausted: remaining === 0,
     remaining,
+  }
+}
+
+/**
+ * Rendered storage held, from the server's sum of `renders.size_bytes`.
+ *
+ * Separate from `quota` above because the two behave differently: the daily
+ * count only falls with time, while this one falls the moment a project is
+ * deleted. Same `known: false` treatment while the fetch is in flight.
+ */
+export function storage(q: QuotaDTO | null) {
+  if (!q) {
+    return { known: false, label: '', width: '0%', full: false }
+  }
+
+  const { storageBytes: used, storageLimitBytes: limit } = q
+  // A cap of zero is "no room", not "unlimited" -- and not a division by zero.
+  const pct = limit === 0 ? 100 : Math.min(100, Math.round((used / limit) * 100))
+
+  return {
+    known: true,
+    label: `${fmtBytes(used)} of ${fmtBytes(limit)}`,
+    width: `${pct}%`,
+    full: used >= limit,
   }
 }
 

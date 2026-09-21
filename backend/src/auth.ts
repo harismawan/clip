@@ -26,6 +26,8 @@ export interface SessionUser {
   pictureUrl: string | null
   /** Per-user job allowance, or null to follow QUOTA_JOBS_PER_DAY. */
   dailyJobLimit: number | null
+  /** Per-user rendered-bytes cap, or null to follow QUOTA_STORAGE_GB. */
+  storageLimitBytes: number | null
 }
 
 /** Resolves a session id (the token's hash) to its user, or null. */

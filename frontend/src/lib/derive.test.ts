@@ -1,5 +1,5 @@
 import { test, expect, describe } from 'bun:test'
-import { clampClipCount, etaForCount, jobIndicator, quota } from './derive'
+import { clampClipCount, etaForCount, jobIndicator, quota, storage } from './derive'
 
 /**
  * The one place that decides whether "a video is being processed" is worth
@@ -92,62 +92,62 @@ describe('quota', () => {
   test('the shape is the same whether or not the server has answered', () => {
     // Callers destructure this; a missing field is a type error at the call site.
     expect(Object.keys(quota(null)).sort()).toEqual(
-      Object.keys(quota({ used: 1, limit: 3, remaining: 2, resetsAt: null })).sort(),
+      Object.keys(quota({ used: 1, limit: 3, remaining: 2, storageBytes: 0, storageLimitBytes: 5 * 1024 ** 3, resetsAt: null })).sort(),
     )
   })
 
   test('remaining is exposed for callers that need the number itself', () => {
-    expect(quota({ used: 1, limit: 3, remaining: 2, resetsAt: null }).remaining).toBe(2)
+    expect(quota({ used: 1, limit: 3, remaining: 2, storageBytes: 0, storageLimitBytes: 5 * 1024 ** 3, resetsAt: null }).remaining).toBe(2)
     expect(quota(null).remaining).toBe(0)
   })
 
   test('it counts down from the limit the server reports', () => {
-    const q = quota({ used: 1, limit: 3, remaining: 2, resetsAt: at(3_600_000) })
+    const q = quota({ used: 1, limit: 3, remaining: 2, storageBytes: 0, storageLimitBytes: 5 * 1024 ** 3, resetsAt: at(3_600_000) })
     expect(q.known).toBe(true)
     expect(q.label).toBe('2 of 3 videos left today')
   })
 
   test('it does not use a hardcoded allowance', () => {
     // QUOTA_JOBS_PER_DAY is configurable; 3 must not be baked in.
-    const q = quota({ used: 2, limit: 10, remaining: 8, resetsAt: at(3_600_000) })
+    const q = quota({ used: 2, limit: 10, remaining: 8, storageBytes: 0, storageLimitBytes: 5 * 1024 ** 3, resetsAt: at(3_600_000) })
     expect(q.label).toBe('8 of 10 videos left today')
   })
 
   test('the used label reads as a fraction for the meter', () => {
-    expect(quota({ used: 1, limit: 3, remaining: 2, resetsAt: null }).usedLabel).toBe('1 of 3')
+    expect(quota({ used: 1, limit: 3, remaining: 2, storageBytes: 0, storageLimitBytes: 5 * 1024 ** 3, resetsAt: null }).usedLabel).toBe('1 of 3')
   })
 
   test('the bar width tracks what has been spent', () => {
-    expect(quota({ used: 1, limit: 3, remaining: 2, resetsAt: null }).width).toBe('33%')
-    expect(quota({ used: 3, limit: 3, remaining: 0, resetsAt: null }).width).toBe('100%')
+    expect(quota({ used: 1, limit: 3, remaining: 2, storageBytes: 0, storageLimitBytes: 5 * 1024 ** 3, resetsAt: null }).width).toBe('33%')
+    expect(quota({ used: 3, limit: 3, remaining: 0, storageBytes: 0, storageLimitBytes: 5 * 1024 ** 3, resetsAt: null }).width).toBe('100%')
   })
 
   test('being over the limit cannot overflow the bar', () => {
-    expect(quota({ used: 5, limit: 3, remaining: 0, resetsAt: null }).width).toBe('100%')
+    expect(quota({ used: 5, limit: 3, remaining: 0, storageBytes: 0, storageLimitBytes: 5 * 1024 ** 3, resetsAt: null }).width).toBe('100%')
   })
 
   test('an exhausted allowance says so plainly', () => {
-    const q = quota({ used: 3, limit: 3, remaining: 0, resetsAt: at(3_600_000) })
+    const q = quota({ used: 3, limit: 3, remaining: 0, storageBytes: 0, storageLimitBytes: 5 * 1024 ** 3, resetsAt: at(3_600_000) })
     expect(q.label).toBe('No videos left today')
     expect(q.exhausted).toBe(true)
   })
 
   test('nothing spent means nothing to wait for', () => {
-    expect(quota({ used: 0, limit: 3, remaining: 3, resetsAt: null }).resetLabel).toBe('')
+    expect(quota({ used: 0, limit: 3, remaining: 3, storageBytes: 0, storageLimitBytes: 5 * 1024 ** 3, resetsAt: null }).resetLabel).toBe('')
   })
 
   test('it explains the rolling window in hours, not a calendar date', () => {
-    const q = quota({ used: 1, limit: 3, remaining: 2, resetsAt: at(3 * 3_600_000) })
+    const q = quota({ used: 1, limit: 3, remaining: 2, storageBytes: 0, storageLimitBytes: 5 * 1024 ** 3, resetsAt: at(3 * 3_600_000) })
     expect(q.resetLabel).toBe('A slot frees up in 3h')
   })
 
   test('under an hour is reported in minutes', () => {
-    const q = quota({ used: 1, limit: 3, remaining: 2, resetsAt: at(40 * 60_000) })
+    const q = quota({ used: 1, limit: 3, remaining: 2, storageBytes: 0, storageLimitBytes: 5 * 1024 ** 3, resetsAt: at(40 * 60_000) })
     expect(q.resetLabel).toBe('A slot frees up in 40 min')
   })
 
   test('a reset time already past reads as imminent, not negative', () => {
-    const q = quota({ used: 1, limit: 3, remaining: 2, resetsAt: at(-60_000) })
+    const q = quota({ used: 1, limit: 3, remaining: 2, storageBytes: 0, storageLimitBytes: 5 * 1024 ** 3, resetsAt: at(-60_000) })
     expect(q.resetLabel).toBe('A slot frees up any moment')
   })
 })
@@ -229,5 +229,53 @@ describe('etaForCount', () => {
   test('never promises less than a minute', () => {
     expect(etaForCount(0, 1)).toBe('~1 min')
     expect(etaForCount(60, 1)).toBe('~2 min')
+  })
+})
+
+/**
+ * The storage row on the plan screen. Was hardcoded to "1.2 GB of 5 GB" from
+ * the prototype, which made a full account look a quarter full.
+ */
+describe('storage', () => {
+  const GB = 1024 ** 3
+  const q = (storageBytes: number, storageLimitBytes: number) => ({
+    used: 0,
+    limit: 3,
+    remaining: 3,
+    storageBytes,
+    storageLimitBytes,
+    resetsAt: null,
+  })
+
+  test('before the server has answered, it does not invent a number', () => {
+    expect(storage(null).known).toBe(false)
+  })
+
+  test('the shape is the same whether or not the server has answered', () => {
+    expect(Object.keys(storage(null)).sort()).toEqual(Object.keys(storage(q(0, 5 * GB))).sort())
+  })
+
+  test('it reports both sides in units a person reads', () => {
+    expect(storage(q(1.2 * GB, 5 * GB)).label).toBe('1.2 GB of 5.0 GB')
+  })
+
+  test('the bar tracks the real fraction', () => {
+    expect(storage(q(1 * GB, 4 * GB)).width).toBe('25%')
+  })
+
+  test('an empty account reads zero, not NaN', () => {
+    const s = storage(q(0, 5 * GB))
+    expect(s.width).toBe('0%')
+    expect(s.label).toContain('0 B')
+  })
+
+  test('a limit of zero does not divide by zero', () => {
+    expect(storage(q(0, 0)).width).toBe('100%')
+  })
+
+  test('over the cap clamps at full rather than overflowing the bar', () => {
+    const s = storage(q(9 * GB, 5 * GB))
+    expect(s.width).toBe('100%')
+    expect(s.full).toBe(true)
   })
 })
