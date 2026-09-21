@@ -46,7 +46,7 @@ jobs:
       # and refuses a dirty tree or a clone holding commits that are not on
       # origin/main. Pulling here would run before those guards and defeat them.
       - name: Deploy
-        run: bash /home/wildandev/repo/clip/scripts/deploy.sh --pull
+        run: bash /home/wildandev/repo/clip/scripts/deploy.sh --pull --skip-worker
 
       # deploy.sh already fails the job if its own health checks fail; this is
       # the one-line summary that shows in the run without opening the log.

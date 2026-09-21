@@ -22,6 +22,7 @@
 #   --skip-infra     don't touch docker compose
 #   --skip-web       don't build/publish the frontend
 #   --skip-api       don't install/migrate/restart the API and worker
+#   --skip-worker    don't deploy/restart the worker process (API-only)
 #   --skip-nginx     don't sync the nginx site config
 #   --serial         run stages one at a time (easier to read when debugging)
 #   -h, --help       show this
@@ -36,20 +37,20 @@ SITE="clip2.mhamzah.id"
 WEB_DIST_TARGET="/var/www/html/clip2/dist"
 NGINX_AVAILABLE="/etc/nginx/sites-available/$SITE"
 NGINX_REPO_CONF="$REPO_ROOT/deploy/nginx/$SITE"
-PM2_APPS=( "clip-api" "clip-worker" )
 ECOSYSTEM="$REPO_ROOT/ecosystem.config.cjs"
 
 # DO_PULL defaults off: a human running this deploys what they are looking at.
-DO_INFRA=1 DO_WEB=1 DO_API=1 DO_NGINX=1 PARALLEL=1 DO_PULL=0
+DO_INFRA=1 DO_WEB=1 DO_API=1 DO_WORKER=1 DO_NGINX=1 PARALLEL=1 DO_PULL=0
 for arg in "$@"; do
   case "$arg" in
-    --pull)       DO_PULL=1 ;;
-    --skip-infra) DO_INFRA=0 ;;
-    --skip-web)   DO_WEB=0 ;;
-    --skip-api)   DO_API=0 ;;
-    --skip-nginx) DO_NGINX=0 ;;
-    --serial)     PARALLEL=0 ;;
-    -h|--help)    sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --pull)        DO_PULL=1 ;;
+    --skip-infra)  DO_INFRA=0 ;;
+    --skip-web)    DO_WEB=0 ;;
+    --skip-api)    DO_API=0 ;;
+    --skip-worker) DO_WORKER=0 ;;
+    --skip-nginx)  DO_NGINX=0 ;;
+    --serial)      PARALLEL=0 ;;
+    -h|--help)    sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -161,7 +162,7 @@ fi
 
 # The worker is the half that does the work, and every one of these fails only
 # AFTER a multi-GB download if it is missing. Check them while it is free.
-if [ "$DO_API" = 1 ]; then
+if [ "$DO_API" = 1 ] && [ "$DO_WORKER" = 1 ]; then
   need ffmpeg; need ffprobe; need yt-dlp
   [ -x "$REPO_ROOT/worker/.venv/bin/whisper-ctranslate2" ] \
     || die "worker/.venv/bin/whisper-ctranslate2 missing — run scripts/setup-python.sh"
@@ -198,9 +199,11 @@ if [ "$DO_API" = 1 ]; then
     die "something already listens on :$API_PORT and it is not pm2's clip-api.
        That is almost certainly 'bun run dev:api'. Stop the dev servers first."
   fi
-  if pgrep -f 'cwd=worker|worker/src/index.ts' >/dev/null 2>&1 && ! pm2 describe clip-worker >/dev/null 2>&1; then
-    die "a worker is running outside pm2 (likely 'bun run dev:worker').
-       Two workers share one queue and race for jobs. Stop it first."
+  if [ "$DO_WORKER" = 1 ]; then
+    if pgrep -f 'cwd=worker|worker/src/index.ts' >/dev/null 2>&1 && ! pm2 describe clip-worker >/dev/null 2>&1; then
+      die "a worker is running outside pm2 (likely 'bun run dev:worker').
+         Two workers share one queue and race for jobs. Stop it first."
+    fi
   fi
 fi
 
@@ -356,17 +359,20 @@ fi
 # and nginx has a route to it. Adding the /api block while the old bundle is
 # still published is harmless.
 if [ "$DO_API" = 1 ]; then
-  say "api + worker: (re)starting ${PM2_APPS[*]}"
+  apps_to_start=( "clip-api" )
+  [ "$DO_WORKER" = 1 ] && apps_to_start+=( "clip-worker" )
+
+  say "api + worker: (re)starting ${apps_to_start[*]}"
   # delete-then-start, scoped BY NAME: pm2 keeps the exec_mode and interpreter
   # an app was created with, so a reload would silently ignore changes to
   # ecosystem.config.cjs. Never `pm2 restart all` -- this box runs unrelated
   # apps (diudara-api, task-api, planner-backend and others) under the same pm2.
-  for app in "${PM2_APPS[@]}"; do
+  for app in "${apps_to_start[@]}"; do
     pm2 delete "$app" >/dev/null 2>&1 || true
+    ( cd "$REPO_ROOT" && pm2 start "$ECOSYSTEM" --only "$app" --update-env ) | sed 's/^/    /'
   done
-  ( cd "$REPO_ROOT" && pm2 start "$ECOSYSTEM" --update-env ) | sed 's/^/    /'
   pm2 save >/dev/null 2>&1 || true
-  ok "api and worker started"
+  ok "${apps_to_start[*]} started"
 fi
 
 if [ "$DO_NGINX" = 1 ]; then
@@ -405,8 +411,10 @@ if [ "$DO_API" = 1 ]; then
   # The API answering says nothing about the worker, which is a separate process
   # with its own way to fail (venv, ffmpeg, DB). pm2 is the only signal we have
   # without enqueuing a real job.
-  worker_status="$(pm2 jlist 2>/dev/null | grep -o '"name":"clip-worker".*' | grep -o '"status":"[a-z]*"' | head -1 | cut -d'"' -f4)"
-  check "worker process" "online" "${worker_status:-missing}"
+  if [ "$DO_WORKER" = 1 ]; then
+    worker_status="$(pm2 jlist 2>/dev/null | grep -o '"name":"clip-worker".*' | grep -o '"status":"[a-z]*"' | head -1 | cut -d'"' -f4)"
+    check "worker process" "online" "${worker_status:-missing}"
+  fi
 fi
 
 if [ "$DO_NGINX" = 1 ] || [ "$DO_WEB" = 1 ]; then

@@ -1,0 +1,7 @@
+.git
+node_modules
+worker/.venv
+worker/.work
+worker/output
+.env
+dist

@@ -1,0 +1,24 @@
+# Worker compose service for standalone or multi-host deployment
+# Usage: docker compose -f docker-compose.worker.yml up -d --build
+
+name: clip-worker
+
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Override relative WORK_DIR to an absolute scratch path in container
+      WORK_DIR: /app/worker/output/.work
+    volumes:
+      # Optional persistence for scratch / downloads / cache
+      - worker-work:/app/worker/output/.work
+    network_mode: host
+
+volumes:
+  worker-work:
