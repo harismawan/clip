@@ -1,12 +1,14 @@
 import { useEffect } from 'react'
 import { Button } from '../components/Button'
 import { Chip } from '../components/Chip'
+import { EditorUnavailable } from '../components/EditorUnavailable'
 import { TrimHandle } from '../components/TrimHandle'
 import { FEATURES } from '../config'
 import { CLIPS, WAVE } from '../data/fixtures'
 import { cn } from '../lib/cn'
 import { clipTitle } from '../lib/derive'
 import { fmt } from '../lib/format'
+import { useIsDesktop } from '../lib/media'
 import { useApp } from '../state/AppContext'
 import { windowFor } from '../state/useSnipline'
 import type { Clip } from '../types'
@@ -23,6 +25,7 @@ const TICKS = 6
 const NUDGE_SECONDS = 1
 
 export function EditorScreen() {
+  const isDesktop = useIsDesktop()
   const {
     state,
     trackRef,
@@ -57,6 +60,23 @@ export function EditorScreen() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [backToResults, markTrim, togglePlay])
+
+  /**
+   * Below `md` the editor is replaced wholesale rather than reflowed.
+   *
+   * Its header alone packs ~487px of non-shrinking, nowrap controls into a
+   * 335px viewport, which clips "Save & download" off-screen with no way to
+   * reach it. Every hook above runs first, so this early return cannot change
+   * hook order.
+   */
+  if (!isDesktop) {
+    return (
+      <EditorUnavailable
+        clipTitle={state.clips.find((c) => c.id === state.editing)?.t}
+        onBack={backToResults}
+      />
+    )
+  }
 
   // The editor is still a prototype (Tier A defers it), so it falls back to
   // fixture data when opened without a real clip in hand.
