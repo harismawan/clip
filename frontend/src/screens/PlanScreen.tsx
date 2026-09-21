@@ -30,7 +30,7 @@ export function PlanScreen() {
   const { usedLabel, width } = quota(state.quota)
 
   return (
-    <div className="min-h-0 flex-1 overflow-auto px-7 py-[26px]">
+    <div className="min-h-0 flex-1 overflow-auto px-5 py-[26px] sm:px-7">
       <h1 className="m-0 mb-5 font-display text-[27px] font-bold tracking-[-0.025em] text-ink">
         Your plan
       </h1>

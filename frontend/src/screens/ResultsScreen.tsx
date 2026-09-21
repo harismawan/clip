@@ -32,7 +32,12 @@ export function ResultsScreen() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-none items-start gap-4 px-[26px] pt-5">
+      {/*
+        flex-wrap so "Regenerate all" drops to its own line rather than
+        squeezing the title into ~57px, where a 17px heading shreds into
+        one-word rows.
+      */}
+      <div className="flex flex-none flex-wrap items-start gap-x-4 gap-y-3 px-5 pt-5 sm:px-[26px]">
         {src?.thumbnailUrl ? (
           <img
             src={src.thumbnailUrl}
@@ -46,8 +51,8 @@ export function ResultsScreen() {
             style={{ aspectRatio: '16/9' }}
           />
         )}
-        <div className="min-w-0 flex-1">
-          <h1 className="m-0 mb-1 text-[17px] leading-[1.3] font-semibold text-ink">
+        <div className="min-w-0 flex-1 basis-[180px]">
+          <h1 className="m-0 mb-1 truncate text-[17px] leading-[1.3] font-semibold text-ink">
             {src?.title ?? 'Your clips'}
           </h1>
           <p className="m-0 text-[12.5px] text-black/45">
@@ -65,7 +70,7 @@ export function ResultsScreen() {
         </Button>
       </div>
 
-      <div className="flex flex-none flex-wrap items-center gap-2.5 px-[26px] pt-[18px] pb-3.5">
+      <div className="flex flex-none flex-wrap items-center gap-2.5 px-5 pt-[18px] pb-3.5 sm:px-[26px]">
         <div className="flex gap-1 rounded-[9px] bg-sand p-[3px]">
           {tabs.map((label) => {
             const on = state.filter === label
@@ -93,7 +98,7 @@ export function ResultsScreen() {
         <span className="ml-auto text-[12.5px] text-black/45">{state.clips.length} clips</span>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto px-[26px] pb-[22px]">
+      <div className="min-h-0 flex-1 overflow-auto px-5 pb-[22px] sm:px-[26px]">
         <div className="grid max-w-[1120px] grid-cols-[repeat(auto-fill,minmax(min(152px,100%),1fr))] gap-4">
           {ordered.map((clip) => {
             const busy = !!state.regenerating[clip.id]
@@ -175,7 +180,16 @@ export function ResultsScreen() {
                     type="button"
                     onClick={() => openPlayer(clip.id)}
                     aria-label={`Play ${clipTitle(clip)}`}
-                    className="absolute top-1/2 left-1/2 z-20 flex size-12 -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full border border-white/25 bg-black/55 text-[15px] leading-none text-white opacity-0 transition-opacity group-hover/card:opacity-100 focus-visible:opacity-100 hover:bg-black/75"
+                    /*
+                      Hidden until hover ONLY where hovering is possible.
+                      Tailwind nests hover variants inside @media(hover:hover),
+                      so hiding this at the md breakpoint alone would hide it
+                      for good on a touch tablet -- wide enough for md, with no
+                      pointer to reveal it. Phones stay visible for that reason.
+                      (Class names are avoided in this comment: the scanner
+                      reads comments too, and would emit the rule it describes.)
+                    */
+                    className="absolute top-1/2 left-1/2 z-20 flex size-12 -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full border border-white/25 bg-black/55 text-[15px] leading-none text-white transition-opacity hover:bg-black/75 focus-visible:opacity-100 md:[@media(hover:hover)]:opacity-0 md:group-hover/card:opacity-100"
                   >
                     ▶
                   </button>
@@ -194,13 +208,13 @@ export function ResultsScreen() {
                     </p>
                   )}
                   <div className="flex gap-1.5">
-                    <Chip onClick={() => openEditor(clip.id)} className="h-[30px] flex-1">
+                    <Chip onClick={() => openEditor(clip.id)} className="h-10 flex-1 md:h-[30px]">
                       Edit
                     </Chip>
                     <Chip
                       onClick={() => redoClip(clip.id)}
                       disabled={busy}
-                      className={cn('h-[30px] flex-1', busy && 'text-black/30')}
+                      className={cn('h-10 flex-1 md:h-[30px]', busy && 'text-black/30')}
                     >
                       {busy ? '…' : 'Redo'}
                     </Chip>
@@ -212,7 +226,13 @@ export function ResultsScreen() {
         </div>
       </div>
 
-      <div className="flex h-[66px] flex-none flex-wrap items-center gap-4 border-t border-black/8 bg-white px-[26px]">
+      {/*
+        A minimum height, not a fixed one. The row already wrapped, but pinning
+        its height cropped the wrapped lines, which put the Download button
+        below the border and out of reach on a phone. Desktop is unchanged at
+        66px, since the contents fit on one line there.
+      */}
+      <div className="flex min-h-[66px] flex-none flex-wrap items-center gap-x-4 gap-y-2.5 border-t border-black/8 bg-white px-5 py-3 sm:px-[26px] sm:py-0">
         <span className="text-[13.5px] font-semibold text-ink">
           {selected === 0
             ? 'No clips selected'

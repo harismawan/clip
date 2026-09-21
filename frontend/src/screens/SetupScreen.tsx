@@ -49,8 +49,11 @@ export function SetupScreen() {
     )
   }
 
+  // items-start below md. Centring a card taller than the viewport pushes its
+  // top above the scroll origin, where it is cropped and cannot be scrolled
+  // back to -- the card is ~700px on a phone with ~560px to work with.
   return (
-    <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-7">
+    <div className="flex min-h-0 flex-1 items-start justify-center overflow-auto p-4 sm:p-7 md:items-center">
       <div className="animate-rise w-full max-w-[640px] overflow-hidden rounded-[22px] border-2 border-ink bg-white shadow-stamp-lg">
         <div className="flex gap-4 border-b border-black/8 p-5">
           <div
