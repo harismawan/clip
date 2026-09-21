@@ -23,7 +23,7 @@ export function NewVideoScreen() {
       </p>
 
       <form
-        className="flex w-full max-w-[720px] flex-col gap-2.5 sm:flex-row"
+        className="flex w-full max-w-[560px] flex-col gap-2.5 sm:flex-row"
         onSubmit={(e) => {
           e.preventDefault()
           analyze()
@@ -37,13 +37,13 @@ export function NewVideoScreen() {
           value={state.url}
           onChange={(e) => setUrl(e.target.value)}
           placeholder="Paste a video URL"
-          className="h-[50px] flex-1 rounded-full border-2 border-ink bg-white px-[18px] text-[14px] text-ink outline-none focus:border-violet"
+          className="h-[60px] flex-1 rounded-full border-2 border-ink bg-white px-[20px] text-[14px] text-ink outline-none focus:border-violet"
         />
         <Button
           type="submit"
           armed={armed}
           loading={busy}
-          className="h-[50px] px-6 text-[14px]"
+          className="h-[60px] px-7 text-[14px]"
         >
           {busy ? 'Reading the link…' : 'Get clips'}
         </Button>
