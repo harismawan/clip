@@ -7,6 +7,7 @@
     "dev": "bun --env-file=../.env --watch src/index.ts",
     "start": "bun --env-file=../.env src/index.ts",
     "test": "bun test",
+    "quota": "bun --env-file=../.env scripts/quota.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "bun --env-file=../.env src/db/migrate.ts",
     "db:push": "bun --env-file=../.env x drizzle-kit push",

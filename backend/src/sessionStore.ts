@@ -67,6 +67,7 @@ export async function lookupSession(
       email: users.email,
       name: users.name,
       pictureUrl: users.pictureUrl,
+      dailyJobLimit: users.dailyJobLimit,
       expiresAt: sessions.expiresAt,
     })
     .from(sessions)
@@ -76,7 +77,13 @@ export async function lookupSession(
 
   if (!row) return null
   return {
-    user: { id: row.id, email: row.email, name: row.name, pictureUrl: row.pictureUrl },
+    user: {
+      id: row.id,
+      email: row.email,
+      name: row.name,
+      pictureUrl: row.pictureUrl,
+      dailyJobLimit: row.dailyJobLimit,
+    },
     expiresAt: row.expiresAt,
   }
 }

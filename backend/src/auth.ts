@@ -24,6 +24,8 @@ export interface SessionUser {
   email: string
   name: string | null
   pictureUrl: string | null
+  /** Per-user job allowance, or null to follow QUOTA_JOBS_PER_DAY. */
+  dailyJobLimit: number | null
 }
 
 /** Resolves a session id (the token's hash) to its user, or null. */

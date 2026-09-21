@@ -48,7 +48,9 @@ jobsRoutes.post('/', async (c) => {
   const refusal = quotaVerdict({
     activeCount: await countActiveJobs(user.id),
     dailyCount: await countJobsSince(user.id, new Date(Date.now() - 86_400_000)),
-    dailyLimit: env.QUOTA_JOBS_PER_DAY,
+    // A per-user override exists so one account can be raised (or cut) without
+    // moving the global default for everyone. See backend/scripts/quota.ts.
+    dailyLimit: user.dailyJobLimit ?? env.QUOTA_JOBS_PER_DAY,
   })
   if (refusal) return c.json({ error: refusal.message }, refusal.status)
 
@@ -103,11 +105,12 @@ jobsRoutes.get('/active', async (c) => {
 jobsRoutes.get('/quota', async (c) => {
   const windowStart = new Date(Date.now() - 86_400_000)
   const { used, oldestAt } = await quotaUsage(c.get('user').id, windowStart)
+  const limit = c.get('user').dailyJobLimit ?? env.QUOTA_JOBS_PER_DAY
 
   const quota: QuotaDTO = {
     used,
-    limit: env.QUOTA_JOBS_PER_DAY,
-    remaining: Math.max(0, env.QUOTA_JOBS_PER_DAY - used),
+    limit,
+    remaining: Math.max(0, limit - used),
     // 24h after the oldest job in the window, that job drops out and its slot
     // comes back. Null when nothing is spent.
     resetsAt: oldestAt ? new Date(oldestAt.getTime() + 86_400_000).toISOString() : null,
