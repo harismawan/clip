@@ -13,12 +13,13 @@ describe('quota script arguments', () => {
     expect(parseArgs(['a@b.com'])).toEqual({
       email: 'a@b.com',
       limit: undefined,
+      storageBytes: undefined,
       release: false,
     })
   })
 
   test('--limit sets a per-user override', () => {
-    expect(parseArgs(['a@b.com', '--limit', '20'])).toEqual({
+    expect(parseArgs(['a@b.com', '--limit', '20'])).toMatchObject({
       email: 'a@b.com',
       limit: 20,
       release: false,
@@ -28,7 +29,7 @@ describe('quota script arguments', () => {
   test('--limit default clears the override', () => {
     // null is the value written to the column, which is what makes the user
     // follow QUOTA_JOBS_PER_DAY again.
-    expect(parseArgs(['a@b.com', '--limit', 'default'])).toEqual({
+    expect(parseArgs(['a@b.com', '--limit', 'default'])).toMatchObject({
       email: 'a@b.com',
       limit: null,
       release: false,
@@ -44,11 +45,37 @@ describe('quota script arguments', () => {
   })
 
   test('both at once', () => {
-    expect(parseArgs(['a@b.com', '--release', '--limit', '5'])).toEqual({
+    expect(parseArgs(['a@b.com', '--release', '--limit', '5'])).toMatchObject({
       email: 'a@b.com',
       limit: 5,
       release: true,
     })
+  })
+
+  test('--storage takes GB, because that is the unit a person says', () => {
+    expect(parseArgs(['a@b.com', '--storage', '20'])).toMatchObject({
+      storageBytes: 20 * 1024 ** 3,
+    })
+  })
+
+  test('a fraction of a GB is allowed and lands on whole bytes', () => {
+    const { storageBytes } = parseArgs(['a@b.com', '--storage', '0.5'])
+    expect(storageBytes).toBe(0.5 * 1024 ** 3)
+    expect(Number.isInteger(storageBytes)).toBe(true)
+  })
+
+  test('--storage default clears the override', () => {
+    expect(parseArgs(['a@b.com', '--storage', 'default'])).toMatchObject({ storageBytes: null })
+  })
+
+  test('--storage 0 is a real value, not a missing one', () => {
+    expect(parseArgs(['a@b.com', '--storage', '0'])).toMatchObject({ storageBytes: 0 })
+  })
+
+  test('a junk or negative storage value is an error rather than NaN in the column', () => {
+    expect(() => parseArgs(['a@b.com', '--storage', 'lots'])).toThrow()
+    expect(() => parseArgs(['a@b.com', '--storage'])).toThrow()
+    expect(() => parseArgs(['a@b.com', '--storage', '-1'])).toThrow()
   })
 
   test('no email is an error, not a run against every user', () => {

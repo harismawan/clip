@@ -23,3 +23,19 @@ export function ago(ms: number, now = Date.now()): string {
 export function aspect(ratio: string): string {
   return ratio.replace(':', '/')
 }
+
+/**
+ * "1234567" -> "1.2 MB". Mirrors fmtBytes in shared/format.ts; the frontend
+ * does not import across the workspace (see types.ts).
+ */
+export function fmtBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let v = bytes / 1024
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v.toFixed(1)} ${units[i]}`
+}

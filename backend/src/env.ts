@@ -26,6 +26,8 @@ const schema = z.object({
   SESSION_TTL_DAYS: z.coerce.number().default(30),
   /** Per-user jobs per rolling 24h. Worker concurrency is 1; see quota.ts. */
   QUOTA_JOBS_PER_DAY: z.coerce.number().default(3),
+  /** Per-user rendered GB. In GB, not bytes, because a human sets it. */
+  QUOTA_STORAGE_GB: z.coerce.number().default(5),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
   /**
    * Publicly reachable origin of this API. Not the same as HOST:PORT when nginx

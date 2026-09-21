@@ -1,6 +1,6 @@
 import { Button } from '../components/Button'
 import { Meter } from '../components/Meter'
-import { quota } from '../lib/derive'
+import { quota, storage } from '../lib/derive'
 import { useApp } from '../state/AppContext'
 
 function QuotaRow({
@@ -28,6 +28,7 @@ function QuotaRow({
 export function PlanScreen() {
   const { state, say } = useApp()
   const { usedLabel, width } = quota(state.quota)
+  const disk = storage(state.quota)
 
   return (
     <div className="min-h-0 flex-1 overflow-auto px-5 py-[26px] sm:px-7">
@@ -52,7 +53,17 @@ export function PlanScreen() {
               width="100%"
               tone="sand"
             />
-            <QuotaRow label="Storage" value="1.2 GB of 5 GB" width="24%" />
+            {/*
+              Real bytes, from the server's sum over renders. The prototype
+              hardcoded "1.2 GB of 5 GB", which read a quarter full on a full
+              account -- and a full account is exactly when this row matters.
+            */}
+            <QuotaRow
+              label="Storage"
+              value={disk.known ? disk.label : '—'}
+              width={disk.width}
+              tone={disk.full ? 'ink' : undefined}
+            />
           </div>
 
           <p className="mt-[18px] border-t border-black/8 pt-4 text-[12.5px] leading-[1.6] text-muted">

@@ -4,12 +4,15 @@
  *   bun run quota <email>                   show what the server would decide
  *   bun run quota <email> --limit 20        give this user 20 jobs per 24h
  *   bun run quota <email> --limit default   put them back on QUOTA_JOBS_PER_DAY
+ *   bun run quota <email> --storage 20      give this user 20 GB of renders
+ *   bun run quota <email> --storage default put them back on QUOTA_STORAGE_GB
  *   bun run quota <email> --release         cancel a job that is stuck running
  *
- * Two different things block a new job (see quota.ts): a job still running, and
- * the rolling 24-hour count. The status output names which one is biting,
- * because raising the limit does nothing for a user whose last job is wedged in
- * 'rendering', and --release does nothing for one who is simply out of slots.
+ * Three different things block a new job (see quota.ts): a job still running,
+ * the rolling 24-hour count, and the rendered bytes held. The status output
+ * names which one is biting, because raising the daily limit does nothing for a
+ * user who is out of disk, and --release does nothing for one who is simply out
+ * of slots.
  *
  * Nothing here rewrites jobs.created_at: the window is derived from it and the
  * UI reports "resets at" from the oldest row, so backdating would buy a slot by
@@ -18,18 +21,24 @@
 import { and, eq, gte, inArray } from 'drizzle-orm'
 import { users, jobs, jobStatus } from '../../shared/schema.ts'
 import { isTerminal } from '../../shared/types.ts'
+import { fmtBytes } from '../../shared/format.ts'
 import { quotaVerdict } from '../src/quota.ts'
+
+const GB = 1024 ** 3
 
 export interface QuotaArgs {
   email: string
   /** A number to set, null to clear the override, undefined to leave it alone. */
   limit: number | null | undefined
+  /** Same three-way meaning as `limit`, but in bytes: the column's unit. */
+  storageBytes: number | null | undefined
   release: boolean
 }
 
 export function parseArgs(argv: string[]): QuotaArgs {
   let email: string | undefined
   let limit: number | null | undefined
+  let storageBytes: number | null | undefined
   let release = false
 
   for (let i = 0; i < argv.length; i++) {
@@ -47,6 +56,19 @@ export function parseArgs(argv: string[]): QuotaArgs {
           throw new Error(`--limit must be a whole number >= 0, or "default" (got "${raw}")`)
         }
       }
+    } else if (arg === '--storage') {
+      const raw = argv[++i]
+      if (raw === undefined) throw new Error('--storage needs a number of GB, or "default"')
+      if (raw === 'default') {
+        storageBytes = null
+      } else {
+        // GB in, bytes out: the flag is for a person, the column is for Postgres.
+        const gb = Number(raw)
+        if (!Number.isFinite(gb) || gb < 0) {
+          throw new Error(`--storage must be GB >= 0, or "default" (got "${raw}")`)
+        }
+        storageBytes = Math.round(gb * GB)
+      }
     } else if (arg.startsWith('-')) {
       throw new Error(`Unknown option ${arg}`)
     } else if (email === undefined) {
@@ -56,8 +78,12 @@ export function parseArgs(argv: string[]): QuotaArgs {
     }
   }
 
-  if (email === undefined) throw new Error('Usage: bun run quota <email> [--limit N|default] [--release]')
-  return { email, limit, release }
+  if (email === undefined) {
+    throw new Error(
+      'Usage: bun run quota <email> [--limit N|default] [--storage GB|default] [--release]',
+    )
+  }
+  return { email, limit, storageBytes, release }
 }
 
 const ACTIVE = jobStatus.enumValues.filter((s) => !isTerminal(s))
@@ -93,8 +119,17 @@ async function main() {
     await db.update(users).set({ dailyJobLimit: args.limit }).where(eq(users.id, user.id))
     console.log(
       args.limit === null
-        ? `Override cleared — back on the default of ${env.QUOTA_JOBS_PER_DAY}/day.`
+        ? `Daily override cleared — back on the default of ${env.QUOTA_JOBS_PER_DAY}/day.`
         : `Daily limit for ${user.email} set to ${args.limit}.`,
+    )
+  }
+
+  if (args.storageBytes !== undefined) {
+    await db.update(users).set({ storageLimitBytes: args.storageBytes }).where(eq(users.id, user.id))
+    console.log(
+      args.storageBytes === null
+        ? `Storage override cleared — back on the default of ${env.QUOTA_STORAGE_GB} GB.`
+        : `Storage limit for ${user.email} set to ${fmtBytes(args.storageBytes)}.`,
     )
   }
 
@@ -109,16 +144,29 @@ async function main() {
     .from(jobs)
     .where(and(eq(jobs.userId, user.id), inArray(jobs.status, ACTIVE)))
 
-  const effectiveLimit = (args.limit === undefined ? user.dailyJobLimit : args.limit) ?? env.QUOTA_JOBS_PER_DAY
+  const { storageUsage } = await import('../src/ownership.ts')
+  const held = await storageUsage(user.id)
+
+  // What the column holds AFTER this run's writes, so the status lines describe
+  // the state the server will actually see -- not the one we loaded on entry.
+  const limitOverride = args.limit === undefined ? user.dailyJobLimit : args.limit
+  const storageOverride =
+    args.storageBytes === undefined ? user.storageLimitBytes : args.storageBytes
+  const effectiveLimit = limitOverride ?? env.QUOTA_JOBS_PER_DAY
+  const effectiveStorage = storageOverride ?? env.QUOTA_STORAGE_GB * GB
+  const source = (o: number | null) => (o === null ? '(global default)' : '(per-user override)')
   const refusal = quotaVerdict({
     activeCount: active.length,
     dailyCount: recent.length,
     dailyLimit: effectiveLimit,
+    storageBytes: held,
+    storageLimitBytes: effectiveStorage,
   })
 
   console.log(`\n${user.email} (${user.id})`)
-  console.log(`  limit        ${effectiveLimit}/day${user.dailyJobLimit === null && args.limit === undefined ? ' (global default)' : ' (per-user override)'}`)
+  console.log(`  limit        ${effectiveLimit}/day ${source(limitOverride)}`)
   console.log(`  used         ${recent.length} in the last 24h`)
+  console.log(`  storage      ${fmtBytes(held)} of ${fmtBytes(effectiveStorage)} ${source(storageOverride)}`)
   console.log(`  running now  ${active.length}${active.length ? ` (${active.map((j) => j.status).join(', ')})` : ''}`)
   if (recent[0]) {
     console.log(`  oldest ages out at ${new Date(recent[0].createdAt.getTime() + WINDOW_MS).toISOString()}`)

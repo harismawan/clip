@@ -8,8 +8,8 @@
  * through here makes the owner check impossible to omit rather than merely
  * documented.
  */
-import { and, desc, eq, gte, inArray, isNull, count } from 'drizzle-orm'
-import { db, jobs, clips } from './db/index.ts'
+import { and, desc, eq, gte, inArray, isNull, count, sum } from 'drizzle-orm'
+import { db, jobs, clips, renders } from './db/index.ts'
 import { isTerminal } from '../../shared/types.ts'
 import { jobStatus } from '../../shared/schema.ts'
 import type { Job, Clip } from '../../shared/schema.ts'
@@ -108,6 +108,26 @@ export async function quotaUsage(
     .orderBy(jobs.createdAt)
 
   return { used: rows.length, oldestAt: rows[0]?.createdAt ?? null }
+}
+
+/**
+ * Rendered bytes this user is holding, from `renders.size_bytes`.
+ *
+ * Unlike the daily count, this one DOES shrink when a project is deleted:
+ * deleting drops the clip rows (renders cascade) and the S3 objects with them,
+ * so the space really is back. That is the difference between a rate limit and
+ * a disk -- refunding a daily slot would make the cap free to sidestep, whereas
+ * refusing to refund the bytes would bill for files nobody is storing.
+ */
+export async function storageUsage(userId: string): Promise<number> {
+  const [row] = await db
+    .select({ bytes: sum(renders.sizeBytes) })
+    .from(renders)
+    .innerJoin(clips, eq(renders.clipId, clips.id))
+    .innerJoin(jobs, eq(clips.jobId, jobs.id))
+    .where(eq(jobs.userId, userId))
+  // sum() is null when the user has no renders at all.
+  return Number(row?.bytes ?? 0)
 }
 
 export async function countJobsSince(userId: string, since: Date): Promise<number> {

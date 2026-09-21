@@ -8,23 +8,52 @@
  * The decision is pure over two counts so the boundaries are testable without a
  * database; the counting itself lives in the route.
  */
+import { fmtBytes } from '../../shared/format.ts'
+
 export interface QuotaCounts {
   activeCount: number
   dailyCount: number
   dailyLimit: number
+  /**
+   * Rendered bytes this user is holding, and the cap. Optional: callers that
+   * predate the storage rule keep the two original rules and nothing else.
+   */
+  storageBytes?: number
+  storageLimitBytes?: number
 }
 
 export interface QuotaRefusal {
-  status: 409 | 429
+  status: 409 | 429 | 507
   message: string
 }
 
-export function quotaVerdict({ activeCount, dailyCount, dailyLimit }: QuotaCounts): QuotaRefusal | null {
+export function quotaVerdict({
+  activeCount,
+  dailyCount,
+  dailyLimit,
+  storageBytes,
+  storageLimitBytes,
+}: QuotaCounts): QuotaRefusal | null {
   // Reported first because it is the one the user can act on: wait, or cancel.
   if (activeCount >= 1) {
     return {
       status: 409,
       message: 'You already have a clip job running. Wait for it to finish, or cancel it.',
+    }
+  }
+
+  // Before the daily cap, because it outranks it as advice: a user who is out
+  // of space AND out of slots can fix the space now, whereas the slot only
+  // comes back with time. The disk is also the harder limit -- a job admitted
+  // over it fails at the render step after spending the download.
+  if (
+    storageBytes !== undefined &&
+    storageLimitBytes !== undefined &&
+    storageBytes >= storageLimitBytes
+  ) {
+    return {
+      status: 507,
+      message: `Storage full (${fmtBytes(storageBytes)} of ${fmtBytes(storageLimitBytes)}). Delete a project to free space.`,
     }
   }
 
