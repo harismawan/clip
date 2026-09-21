@@ -56,7 +56,7 @@ export function JobIndicator({
         <button
           type="button"
           onClick={onOpen}
-          className="ml-auto flex-none cursor-pointer rounded-full border-[1.5px] border-ink bg-white px-3 py-1 text-[12px] font-medium text-ink hover:bg-cream"
+          className="ml-auto flex h-10 flex-none cursor-pointer items-center rounded-full border-[1.5px] border-ink bg-white px-3.5 text-[12px] font-medium text-ink hover:bg-cream md:h-auto md:px-3 md:py-1"
         >
           {tone === 'done' ? 'See clips' : 'View'}
         </button>

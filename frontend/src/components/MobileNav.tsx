@@ -23,7 +23,7 @@ export function MobileNav() {
       <div className="flex items-center gap-3">
         <Logo size="sm" />
         <span className="ml-auto text-[11.5px] text-black/45">{quota(state.quota).label}</span>
-        <Button onClick={goNew} className="h-8 px-3 text-[12px]">
+        <Button onClick={goNew} className="h-10 px-3.5 text-[12px]">
           + New
         </Button>
       </div>
@@ -44,7 +44,7 @@ export function MobileNav() {
               aria-current={active ? 'page' : undefined}
               onClick={() => (item.screen === 'results' ? goResults() : go(item.screen))}
               className={cn(
-                'flex h-8 flex-none cursor-pointer items-center rounded-[8px] px-2.5 text-[12.5px] font-medium',
+                'flex h-10 flex-none cursor-pointer items-center rounded-[8px] px-3 text-[12.5px] font-medium',
                 active ? 'bg-cream text-ink' : 'text-muted',
               )}
             >

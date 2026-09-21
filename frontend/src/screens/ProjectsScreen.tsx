@@ -25,14 +25,14 @@ function DeleteProject({ id, title }: { id: string; title: string }) {
         <button
           type="button"
           onClick={() => deleteProject(id)}
-          className="cursor-pointer text-[12.5px] font-medium text-red-600 hover:text-red-700"
+          className="flex h-10 cursor-pointer items-center text-[12.5px] font-medium text-red-600 hover:text-red-700 md:h-auto"
         >
           Confirm delete
         </button>
         <button
           type="button"
           onClick={() => setConfirming(false)}
-          className="cursor-pointer text-[12.5px] font-medium text-black/45 hover:text-ink"
+          className="flex h-10 cursor-pointer items-center text-[12.5px] font-medium text-black/45 hover:text-ink md:h-auto"
         >
           Cancel
         </button>
@@ -45,7 +45,7 @@ function DeleteProject({ id, title }: { id: string; title: string }) {
       type="button"
       onClick={() => setConfirming(true)}
       aria-label={`Delete ${title}`}
-      className="flex-none cursor-pointer text-[12.5px] font-medium text-black/45 hover:text-red-600"
+      className="flex h-10 flex-none cursor-pointer items-center text-[12.5px] font-medium text-black/45 hover:text-red-600 md:h-auto"
     >
       Delete
     </button>
@@ -58,7 +58,7 @@ export function ProjectsScreen() {
   const totalClips = projects.reduce((n, p) => n + p.clipCount, 0)
 
   return (
-    <div className="min-h-0 flex-1 overflow-auto px-7 py-[26px]">
+    <div className="min-h-0 flex-1 overflow-auto px-5 py-[26px] sm:px-7">
       <div className="mb-[22px] flex flex-wrap items-baseline gap-3">
         <h1 className="m-0 font-display text-[27px] font-bold tracking-[-0.025em] text-ink">
           Your projects
@@ -84,7 +84,12 @@ export function ProjectsScreen() {
           {projects.map((project) => (
             <li
               key={project.id}
-              className="flex items-center gap-3.5 rounded-[18px] border-[1.5px] border-[rgba(23,20,18,.16)] bg-white p-[13px]"
+              /*
+                flex-wrap so the actions drop to a second line instead of
+                crushing the title. In the delete-confirm state the two extra
+                buttons left it about 5px wide.
+              */
+              className="flex flex-wrap items-center gap-x-3.5 gap-y-2.5 rounded-[18px] border-[1.5px] border-[rgba(23,20,18,.16)] bg-white p-[13px]"
             >
               {project.source.thumbnailUrl ? (
                 <img
@@ -99,11 +104,11 @@ export function ProjectsScreen() {
                   style={{ aspectRatio: '16/9' }}
                 />
               )}
-              <div className="min-w-0 flex-1">
+              <div className="min-w-0 flex-1 basis-[150px]">
                 <div className="mb-[3px] truncate text-[13.5px] font-semibold text-ink">
                   {project.title}
                 </div>
-                <div className="text-[11.5px] text-black/45">
+                <div className="truncate text-[11.5px] text-black/45">
                   {project.source.platform} · {project.clipCount} clips ·{' '}
                   {ago(project.createdAt)}
                 </div>
@@ -117,7 +122,7 @@ export function ProjectsScreen() {
                 onClick={() => openProject(project.id)}
                 disabled={state.pending === `openProject:${project.id}`}
                 aria-busy={state.pending === `openProject:${project.id}` || undefined}
-                className="flex-none cursor-pointer text-[12.5px] font-medium text-violet hover:text-violet-deep disabled:cursor-not-allowed disabled:text-black/35"
+                className="flex h-10 flex-none cursor-pointer items-center text-[12.5px] font-medium text-violet hover:text-violet-deep disabled:cursor-not-allowed disabled:text-black/35 md:h-auto"
               >
                 {state.pending === `openProject:${project.id}` ? 'Opening…' : 'Open'}
               </button>

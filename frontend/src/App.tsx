@@ -32,7 +32,14 @@ export default function App() {
 
   return (
     <AppContext value={snipline}>
-      <div className="relative flex h-screen w-full flex-col overflow-hidden">
+      {/*
+        Dynamic viewport height, not the static one. On mobile browsers 100vh
+        is the *large* viewport, so with the URL bar showing, the bottom
+        ~60-100px sits underneath it -- and because the body cannot scroll,
+        that strip was clipped rather than reachable, which put the Download
+        and Save buttons out of reach entirely.
+      */}
+      <div className="relative flex h-dvh w-full flex-col overflow-hidden">
         {/*
           'booting' renders nothing on purpose: /api/auth/me has not answered, and
           showing either the login screen or the app would be a guess that flashes

@@ -83,7 +83,7 @@ export function ClipPlayer({
         type="button"
         onClick={onClose}
         aria-label="Close player"
-        className="absolute top-4 right-5 cursor-pointer rounded-[8px] px-2.5 py-1 text-[20px] leading-none text-white/75 hover:bg-white/10 hover:text-white"
+        className="absolute top-3 right-3 flex size-11 cursor-pointer items-center justify-center rounded-full text-[22px] leading-none text-white/75 hover:bg-white/10 hover:text-white md:top-4 md:right-5"
       >
         ×
       </button>
