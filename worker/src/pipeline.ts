@@ -22,6 +22,7 @@ import { keys, storage } from './db.ts'
 import { RATIOS } from '../../shared/types.ts'
 import type { Ratio } from '../../shared/types.ts'
 import type { TranscriptSegment } from '../../shared/schema.ts'
+import { tryFetchYouTubeSubtitles } from './youtube_subs.ts'
 import type { S3 } from '../../shared/s3.ts'
 
 export async function processJob(jobId: string): Promise<void> {
@@ -60,6 +61,7 @@ export async function processJob(jobId: string): Promise<void> {
     const segments = await ensureTranscript(
       jobId,
       video.id,
+      video.url,
       sourcePath,
       video.durationSeconds,
       workDir,
@@ -223,6 +225,7 @@ async function ensureDownloaded(
 async function ensureTranscript(
   jobId: string,
   videoId: string,
+  videoUrl: string,
   sourcePath: string,
   durationSeconds: number,
   workDir: string,
@@ -242,9 +245,17 @@ async function ensureTranscript(
 
   await setStatus(jobId, { status: 'transcribing', stage: 'Transcribing', progress: 24 })
 
-  const result = await transcribe(sourcePath, workDir, durationSeconds, (f) => {
-    void report(jobId, 'transcribing', 'Transcribing', f)
-  })
+  // 1. Try fetching auto-captions / subtitles directly (if enabled, instant & high accuracy)
+  let result = env.PREFER_YOUTUBE_SUBTITLES
+    ? await tryFetchYouTubeSubtitles(videoUrl, workDir, `[pipeline ${jobId}]`)
+    : null
+
+  // 2. Fallback to local Whisper if subtitles are unavailable
+  if (!result) {
+    result = await transcribe(sourcePath, workDir, durationSeconds, (f) => {
+      void report(jobId, 'transcribing', 'Transcribing', f)
+    })
+  }
 
   let srtKey: string | null = null
   if (result.srt.trim()) {

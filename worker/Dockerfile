@@ -3,7 +3,7 @@
 
 FROM oven/bun:1.2-slim AS base
 
-# Install OS packages (ffmpeg, curl, python3, pip, venv)
+# Install OS packages (ffmpeg, curl, python3, pip, venv, and OpenGL/EGL runtime for MediaPipe)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     curl \
@@ -11,6 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
     python3-venv \
+    libgles2 \
+    libegl1 \
+    libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install yt-dlp binary directly to guarantee fresh release

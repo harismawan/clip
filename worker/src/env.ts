@@ -28,6 +28,10 @@ const schema = z.object({
   WHISPER_THREADS: z.coerce.number().int().min(1).default(4),
   MIN_FREE_DISK_GB: z.coerce.number().default(5),
   YTDLP_MAX_AGE_DAYS: z.coerce.number().default(60),
+  PREFER_YOUTUBE_SUBTITLES: z
+    .string()
+    .default('true')
+    .transform((v) => v === 'true'),
 })
 
 const parsed = schema.safeParse(process.env)
