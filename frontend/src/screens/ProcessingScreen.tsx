@@ -10,8 +10,6 @@ const STEPS = ['Downloaded source', 'Transcribed', 'Scoring moments & rendering'
 /** Each step owns a quarter of the run. */
 const STEP_SHARE = 24
 
-const TILE_COUNT = 7
-
 export function ProcessingScreen() {
   const { state, cancelJob, goResults } = useApp()
   const ready = Math.floor((state.progress / 100) * state.count)
@@ -65,9 +63,11 @@ export function ProcessingScreen() {
       </ol>
 
       <div className="flex flex-wrap gap-3.5">
-        {Array.from({ length: TILE_COUNT }, (_, i) => {
+        {Array.from({ length: state.count }, (_, i) => {
           const isReady = i < ready
           const rendering = i === ready && !state.jobDone
+          // Prototype durations only stretch to CLIPS.length; a job may ask for more.
+          const seed = CLIPS[i]
           return (
             <div key={i} className="w-32 flex-none">
               <div
@@ -77,9 +77,9 @@ export function ProcessingScreen() {
                 )}
                 style={{ aspectRatio: '9/16' }}
               >
-                {isReady && (
+                {isReady && seed && (
                   <span className="rounded-[4px] bg-black/60 px-[5px] py-0.5 text-[10.5px] font-medium text-white">
-                    {fmt(CLIPS[i].e - CLIPS[i].s)}
+                    {fmt(seed.e - seed.s)}
                   </span>
                 )}
               </div>
