@@ -44,6 +44,7 @@ export function SettingsScreen() {
     setPwCurrent,
     setPwNext,
     updatePassword,
+    signOut,
   } = useApp()
 
   const pwTooShort = state.pwNext.length > 0 && state.pwNext.length < 8
@@ -109,19 +110,55 @@ export function SettingsScreen() {
         </Card>
 
         <Card title="Account">
+          {/*
+            The real session, not the prototype's hardcoded address. Sign out
+            sits directly below, and a button that ends your session should say
+            which account it is ending.
+          */}
           <Row className={cn('flex items-center gap-3', divider)}>
-            <div className="size-[34px] flex-none rounded-full bg-sand-deeper" />
+            {state.user?.pictureUrl ? (
+              <img
+                src={state.user.pictureUrl}
+                alt=""
+                referrerPolicy="no-referrer"
+                className="size-[34px] flex-none rounded-full object-cover"
+              />
+            ) : (
+              <div className="size-[34px] flex-none rounded-full bg-sand-deeper" />
+            )}
             <div className="min-w-0 flex-1">
-              <div className="text-[13px] font-medium text-ink">you@email.com</div>
-              <div className="text-[11.5px] text-black/45">Signed in with a login link</div>
+              <div className="truncate text-[13px] font-medium text-ink">
+                {/* Google does not always return a name. */}
+                {state.user?.name ?? state.user?.email ?? 'Signed in'}
+              </div>
+              <div className="truncate text-[11.5px] text-black/45">
+                {state.user ? state.user.email : 'Checking your session…'}
+              </div>
             </div>
+          </Row>
+          {/*
+            Sign out lives here, not only in the sidebar. The sidebar is
+            hidden below the md breakpoint, which left phones with no way to
+            sign out of the app at all.
+          */}
+          <Row className={cn('flex items-center justify-between gap-3', divider)}>
+            <span className="text-[13px] font-medium text-ink">Sign out of this device</span>
+            <button
+              type="button"
+              onClick={signOut}
+              disabled={state.pending === 'signOut'}
+              aria-busy={state.pending === 'signOut' || undefined}
+              className="flex h-10 cursor-pointer items-center text-[12.5px] font-medium text-violet hover:text-violet-deep disabled:cursor-not-allowed disabled:text-black/35 md:h-auto"
+            >
+              {state.pending === 'signOut' ? 'Signing out…' : 'Sign out'}
+            </button>
           </Row>
           <Row className="flex items-center justify-between gap-3">
             <span className="text-[13px] font-medium text-ink">Delete account and all clips</span>
             <button
               type="button"
               onClick={() => say('Not in this prototype.')}
-              className="cursor-pointer text-[12.5px] font-medium text-danger"
+              className="flex h-10 cursor-pointer items-center text-[12.5px] font-medium text-danger md:h-auto"
             >
               Delete
             </button>
