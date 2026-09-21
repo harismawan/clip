@@ -37,7 +37,12 @@ export function NewVideoScreen() {
           value={state.url}
           onChange={(e) => setUrl(e.target.value)}
           placeholder="Paste a video URL"
-          className="h-[60px] flex-1 rounded-full border-2 border-ink bg-white px-[20px] text-[14px] text-ink outline-none focus:border-violet"
+          /*
+            Taller on a phone than on a desktop: stacked above the button it
+            spans the full width, and at the desktop height that reads as a
+            thin strip rather than a field worth tapping.
+          */
+          className="h-[72px] flex-1 rounded-full border-2 border-ink bg-white px-[20px] text-[14px] text-ink outline-none focus:border-violet sm:h-[60px]"
         />
         <Button
           type="submit"
