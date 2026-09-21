@@ -32,6 +32,10 @@ const clip = (over: Partial<Clip> = {}): Clip => ({
   cap: 'Stop charging for hours.',
   line: 'charge for the outcome',
   status: 'ready',
+  proxyUrl: null,
+  stripUrl: null,
+  peaks: null,
+  win: null,
   renders: { '9:16': render() },
   ...over,
 })

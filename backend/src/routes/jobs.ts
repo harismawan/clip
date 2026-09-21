@@ -338,6 +338,17 @@ export async function deleteJobArtifacts(jobId: string) {
       .filter(Boolean)
       .map((key) => ({ storage: r.storage, key: key as string })),
   )
+
+  // The editor proxy and filmstrip hang off the clip rather than a render, and
+  // name their own backend for the same reason renders do.
+  objects.push(
+    ...clipRows.flatMap((c) =>
+      [c.proxyKey, c.stripKey]
+        .filter(Boolean)
+        .map((key) => ({ storage: c.assetStorage, key: key as string })),
+    ),
+  )
+
   if (objects.length) await storage.deleteMany(objects)
 
   await db.delete(clips).where(eq(clips.jobId, jobId))

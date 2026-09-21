@@ -106,13 +106,39 @@ export interface Clip {
   sn: string
   /** Suggested caption for posting. */
   cap: string
-  /** The burned-in subtitle line, pre-wrapped. */
+  /** The pre-wrapped two-line hook shown on the card. */
   line: string
   status: 'pending' | 'rendering' | 'ready' | 'failed'
   /** One entry per requested aspect ratio. */
   renders: Partial<Record<Ratio, Render>>
+
+  /**
+   * The editor's assets, or null for a clip made before they existed.
+   *
+   * The source video is not kept after a job, so without these the editor has
+   * nothing to play and falls back to a placeholder. `proxyUrl` is a signed,
+   * range-servable cut of the timeline window; `stripUrl` is the filmstrip.
+   */
+  proxyUrl: string | null
+  stripUrl: string | null
+  /** RMS levels 0-100, one per waveform bar. */
+  peaks: number[] | null
+  /**
+   * The stretch of source the proxy covers. Authoritative — the window clamps
+   * at both ends of the video, so recomputing it would be wrong for any clip
+   * near the start or the end.
+   */
+  win: { start: number; span: number } | null
+
   /** Local-only: whether the card is ticked for download. */
   selected: boolean
+}
+
+/** One transcript line as the editor shows it. */
+export interface TranscriptLine {
+  start: number
+  end: number
+  text: string
 }
 
 /** A finished job, kept so its clips can be reopened later. */

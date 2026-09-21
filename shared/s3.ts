@@ -91,4 +91,8 @@ export const keys = {
   thumb: (jobId: string, clipId: string, ratio: string) =>
     `jobs/${jobId}/clips/${clipId}/${ratio.replace(':', 'x')}.jpg`,
   srt: (videoId: string) => `transcripts/${videoId}.srt`,
+  /** Low-resolution cut of the editor timeline window, for scrubbing. */
+  proxy: (jobId: string, clipId: string) => `jobs/${jobId}/clips/${clipId}/proxy.mp4`,
+  /** Filmstrip sprite for that window: N frames tiled into one JPEG. */
+  strip: (jobId: string, clipId: string) => `jobs/${jobId}/clips/${clipId}/strip.jpg`,
 }

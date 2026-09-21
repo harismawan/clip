@@ -19,6 +19,10 @@ const clip = (id: string, idx: number, selected = false): Clip => ({
   cap: '',
   line: '',
   status: 'ready',
+  proxyUrl: null,
+  stripUrl: null,
+  peaks: null,
+  win: null,
   renders: {},
 })
 
@@ -36,7 +40,6 @@ const source: Source = {
 const base = {
   trimIn: 20,
   trimOut: 60,
-  playhead: 40,
   jobId: 'job-1',
   source,
   clips: [clip('c0', 0)],
@@ -49,9 +52,11 @@ test('clampTrim keeps the window inside 0–100 and never inverts it', () => {
   // Pushing the in point past the out point stops a minimum span short of it.
   expect(clampTrim(base, 'in', 90).trimIn).toBe(56)
   expect(clampTrim(base, 'out', 5).trimOut).toBe(24)
-  // Moving the in point drags the playhead with it; moving the out point doesn't.
-  expect(clampTrim(base, 'in', 30).playhead).toBe(30)
-  expect(clampTrim(base, 'out', 80).playhead).toBe(40)
+  // It touches nothing but the handle it was asked about. The playhead used to
+  // be dragged along here; it belongs to the video element now, and the editor
+  // seeks that directly.
+  expect(clampTrim(base, 'in', 30).trimOut).toBe(60)
+  expect(clampTrim(base, 'out', 80).trimIn).toBe(20)
 })
 
 test('firstEnabled picks the leftmost rendered format', () => {

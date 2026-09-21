@@ -12,10 +12,34 @@
  */
 import { createHmac, timingSafeEqual } from 'node:crypto'
 
+/**
+ * What a signed URL points at.
+ *
+ * `video` and `thumb` resolve against the renders row for a given ratio;
+ * `proxy` and `strip` are the editor assets and hang off the clip itself, so
+ * their ratio is a constant placeholder (see RATIOLESS).
+ */
+export type MediaKind = 'video' | 'thumb' | 'proxy' | 'strip'
+
+/**
+ * The `ratio` used for kinds that have none.
+ *
+ * It is still signed and still compared, so it cannot be varied to forge a
+ * different claim -- it simply carries no meaning for these two kinds.
+ */
+export const RATIOLESS = 'src'
+
+/** Kinds served as MP4; the rest are JPEG. */
+const VIDEO_KINDS = new Set<MediaKind>(['video', 'proxy'])
+
+export function extFor(kind: MediaKind): 'mp4' | 'jpg' {
+  return VIDEO_KINDS.has(kind) ? 'mp4' : 'jpg'
+}
+
 export interface MediaClaim {
   clipId: string
   ratio: string
-  kind: 'video' | 'thumb'
+  kind: MediaKind
   /** Unix seconds. */
   exp: number
 }
@@ -50,12 +74,11 @@ export function mediaUrl(
   secret: string,
   clipId: string,
   ratio: string,
-  kind: 'video' | 'thumb',
+  kind: MediaKind,
   ttlSeconds = 6 * 3600,
 ): string {
   const exp = Math.floor(Date.now() / 1000) + ttlSeconds
   const sig = signMedia(secret, { clipId, ratio, kind, exp })
-  const ext = kind === 'video' ? 'mp4' : 'jpg'
-  const q = new URLSearchParams({ ratio, exp: String(exp), sig })
-  return `${base.replace(/\/$/, '')}/api/media/${clipId}.${ext}?${q}`
+  const q = new URLSearchParams({ ratio, exp: String(exp), sig, kind })
+  return `${base.replace(/\/$/, '')}/api/media/${clipId}.${extFor(kind)}?${q}`
 }

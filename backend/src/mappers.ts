@@ -3,7 +3,7 @@
 import type { Video, Clip, Render, Job } from '../../shared/schema.ts'
 import type { ClipDTO, JobDTO, RenderDTO, SourceDTO, Ratio } from '../../shared/types.ts'
 import { fmtDuration, estimateEta, buildMeta } from '../../shared/format.ts'
-import { mediaUrl } from '../../shared/mediaToken.ts'
+import { mediaUrl, RATIOLESS } from '../../shared/mediaToken.ts'
 import { env } from './env.ts'
 
 export function toSourceDTO(v: Video, clipCount = 12): SourceDTO {
@@ -70,6 +70,20 @@ export function toClipDTOs(clips: Clip[], renders: Render[]): ClipDTO[] {
         line: c.subtitleLine,
         status: c.status,
         renders: out,
+
+        // Ratio-independent: one proxy of the source window serves every crop,
+        // so these are signed with the RATIOLESS placeholder.
+        proxyUrl: c.proxyKey
+          ? mediaUrl(env.PUBLIC_API_URL, env.API_TOKEN, c.id, RATIOLESS, 'proxy')
+          : null,
+        stripUrl: c.stripKey
+          ? mediaUrl(env.PUBLIC_API_URL, env.API_TOKEN, c.id, RATIOLESS, 'strip')
+          : null,
+        peaks: c.peaks,
+        win:
+          c.windowStart !== null && c.windowSpan !== null
+            ? { start: c.windowStart, span: c.windowSpan }
+            : null,
       }
     })
 }

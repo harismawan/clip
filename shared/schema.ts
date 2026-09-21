@@ -237,6 +237,45 @@ export const clips = pgTable(
     subtitleLine: text('subtitle_line').notNull(),
     status: clipStatus('status').notNull().default('pending'),
     error: text('error'),
+
+    /**
+     * Editor assets: a low-resolution proxy of the timeline window, a filmstrip
+     * sprite cut from it, and its audio peaks.
+     *
+     * All nullable, and a null proxyKey is the signal that a clip predates the
+     * editor work -- its screen falls back to the hatched placeholder rather
+     * than breaking. They exist because the source video does not survive its
+     * job (pipeline.ts removes the work dir on every exit path and never
+     * uploads the source), so there would otherwise be nothing to play.
+     */
+    proxyKey: text('proxy_key'),
+    /**
+     * Size of the proxy object.
+     *
+     * Recorded at upload the way renders.sizeBytes is, because a Range request
+     * has to be resolved against a length and the storage interface exposes no
+     * HEAD -- without it the editor's scrubber cannot seek.
+     */
+    proxyBytes: integer('proxy_bytes'),
+    stripKey: text('strip_key'),
+    /** RMS levels 0-100 across the window, one per timeline bucket. */
+    peaks: jsonb('peaks').$type<number[]>(),
+    /**
+     * The exact offsets the proxy was encoded with.
+     *
+     * STORED, not recomputed. The window clamps at both ends of the source -- a
+     * clip at t=10 cannot have a full lead-in, and one near the end cannot have
+     * a full span -- so a frontend recomputing `start - LEAD_IN` would map the
+     * timeline to the wrong frames for precisely those clips.
+     */
+    windowStart: doublePrecision('window_start'),
+    windowSpan: doublePrecision('window_span'),
+    /** Which backend holds proxyKey and stripKey. See renders.storage. */
+    assetStorage: text('asset_storage')
+      .notNull()
+      .default('minio')
+      .references(() => storageBackends.id),
+
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('clips_job_idx').on(t.jobId)],

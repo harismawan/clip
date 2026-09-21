@@ -9,7 +9,14 @@ import type { Clip, JobStatus, Project, QuotaDTO, Ratio, Screen, Source, SourceK
 /** Smallest trim window, as a percentage of the visible timeline. */
 const MIN_TRIM_SPAN = 4
 
-const DEFAULT_TRIM = { trimIn: 22, trimOut: 54, playhead: 34 }
+/**
+ * Where the handles sit before a clip is known.
+ *
+ * Only ever seen for the fraction of a second between opening the editor and
+ * `trimForClip` replacing it -- the prototype used these numbers for every
+ * clip, which put the handles in the wrong place for all real content.
+ */
+const DEFAULT_TRIM = { trimIn: 20, trimOut: 45 }
 
 /**
  * The action currently in flight, or null.
@@ -25,6 +32,7 @@ export type Pending =
   | 'cancelJob'
   | 'regenerateAll'
   | 'download'
+  | 'saveClip'
   | 'signIn'
   | 'signOut'
   | `openProject:${string}`
@@ -72,12 +80,17 @@ export interface SnipState {
   editing: string | null
   trimIn: number
   trimOut: number
-  ratio: string
-  playing: boolean
-  playhead: number
+  /** The crop the editor previews and exports. A wire ratio, e.g. '9:16'. */
+  ratio: Ratio
+  /**
+   * Playback lives in EditorScreen, not here.
+   *
+   * It is driven by a <video> element's own clock now, and `timeupdate` fires
+   * about four times a second -- holding the playhead in this object would
+   * re-render the entire app on every tick.
+   */
   regenerating: Record<string, boolean>
   toast: string | null
-  captionIdx: number
   pwCurrent: string
   pwNext: string
 }
@@ -107,11 +120,11 @@ const initialState: SnipState = {
   playingClipId: null,
   editing: null,
   ...DEFAULT_TRIM,
-  ratio: '9/16',
-  playing: false,
+  // A wire ratio, not a CSS aspect-ratio: the editor's crop buttons index the
+  // clip's renders with this now, and only convert for the style attribute.
+  ratio: '9:16',
   regenerating: {},
   toast: null,
-  captionIdx: 0,
   pwCurrent: '',
   pwNext: '',
 }
@@ -125,15 +138,35 @@ export function firstEnabled(formats: Record<Ratio, boolean>): Ratio {
 export function clampTrim(s: SnipState, which: 'in' | 'out', pct: number): SnipState {
   const v = Math.max(0, Math.min(100, pct))
   if (which === 'in') {
-    const trimIn = Math.min(v, s.trimOut - MIN_TRIM_SPAN)
-    return { ...s, trimIn, playhead: trimIn }
+    return { ...s, trimIn: Math.min(v, s.trimOut - MIN_TRIM_SPAN) }
   }
   return { ...s, trimOut: Math.max(v, s.trimIn + MIN_TRIM_SPAN) }
 }
 
-/** The window of source video the editor timeline shows, in seconds. */
-export function windowFor(clip: { s: number }) {
+/**
+ * The window of source video the editor timeline shows, in seconds.
+ *
+ * The server's answer wins when it has one: the window clamps at both ends of
+ * the source, so a clip near the start or the end does not sit `TIMELINE_LEAD_IN`
+ * after its window begins, and the proxy was encoded to the server's numbers.
+ * The fallback is for clips made before proxies existed, which have no video to
+ * disagree with.
+ */
+export function windowFor(clip: { s: number; win?: { start: number; span: number } | null }) {
+  if (clip.win) return clip.win
   return { start: Math.max(0, clip.s - TIMELINE_LEAD_IN), span: TIMELINE_SPAN }
+}
+
+/** Where a source offset sits on the timeline, as a percentage. */
+export function pctOf(seconds: number, win: { start: number; span: number }): number {
+  if (win.span <= 0) return 0
+  return Math.max(0, Math.min(100, ((seconds - win.start) / win.span) * 100))
+}
+
+/** Where the trim handles open: on the clip's real cut, not a fixed guess. */
+export function trimForClip(clip: { s: number; e: number; win?: { start: number; span: number } | null }) {
+  const win = windowFor(clip)
+  return { trimIn: pctOf(clip.s, win), trimOut: pctOf(clip.e, win) }
 }
 
 /**
@@ -220,7 +253,6 @@ export function useSnipline() {
     screen: 'booting',
   }))
 
-  const playTimer = useRef<number | null>(null)
   const toastTimer = useRef<number | null>(null)
   const unsubscribe = useRef<(() => void) | null>(null)
   const trackRef = useRef<HTMLDivElement | null>(null)
@@ -231,7 +263,6 @@ export function useSnipline() {
 
   useEffect(
     () => () => {
-      if (playTimer.current) clearInterval(playTimer.current)
       if (toastTimer.current) clearTimeout(toastTimer.current)
       unsubscribe.current?.()
     },
@@ -340,11 +371,6 @@ export function useSnipline() {
     }
     // Once, on mount. restoredSlice is state and never changes identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  const stopPlayback = useCallback(() => {
-    if (playTimer.current) clearInterval(playTimer.current)
-    playTimer.current = null
   }, [])
 
   const go = useCallback((screen: Screen) => patch({ screen }), [patch])
@@ -731,9 +757,37 @@ export function useSnipline() {
   }, [patch, say, fail, state.clips, state.filter])
 
   /**
-   * Re-cut one clip. The server re-renders it, so this polls that clip until
-   * its status settles rather than guessing at a duration.
+   * Wait for a re-rendering clip to settle, folding each answer back into state.
+   *
+   * A re-cut re-downloads the source, so there is no duration worth guessing at
+   * -- this polls the job until the clip leaves 'pending'/'rendering'. Resolves
+   * null if it never does before the deadline.
    */
+  const pollClip = useCallback(
+    (clipId: string): Promise<Clip | null> =>
+      new Promise((resolve) => {
+        const jobId = state.jobId
+        const deadline = Date.now() + 10 * 60_000
+
+        const tick = async () => {
+          if (Date.now() > deadline) return resolve(null)
+
+          const job = await api.getJob(jobId).catch(() => null)
+          const found = job?.clips.find((c) => c.id === clipId)
+          if (job && found && found.status !== 'pending' && found.status !== 'rendering') {
+            setState((s) => mergeJob(s, job))
+            // The merged clip, so the caller sees the fresh signed render URLs.
+            return resolve({ ...found, selected: false })
+          }
+          window.setTimeout(() => void tick(), 3000)
+        }
+
+        window.setTimeout(() => void tick(), 3000)
+      }),
+    [state.jobId],
+  )
+
+  /** Re-cut one clip at its current range. */
   const redoClip = useCallback(
     async (id: string) => {
       setState((s) => ({ ...s, regenerating: { ...s.regenerating, [id]: true } }))
@@ -747,26 +801,13 @@ export function useSnipline() {
         return
       }
 
-      const jobId = state.jobId
-      const deadline = Date.now() + 10 * 60_000
-      const poll = async () => {
-        if (Date.now() > deadline) {
-          setState((s) => ({ ...s, regenerating: { ...s.regenerating, [id]: false } }))
-          say('That re-cut is taking unusually long; refresh to check.')
-          return
-        }
-        const job = await api.getJob(jobId).catch(() => null)
-        const clip = job?.clips.find((c) => c.id === id)
-        if (clip && clip.status !== 'pending' && clip.status !== 'rendering') {
-          setState((s) => mergeJob({ ...s, regenerating: { ...s.regenerating, [id]: false } }, job!))
-          say(clip.status === 'ready' ? 'Clip recut.' : 'That re-cut failed.')
-          return
-        }
-        window.setTimeout(() => void poll(), 3000)
-      }
-      window.setTimeout(() => void poll(), 3000)
+      const clip = await pollClip(id)
+      setState((s) => ({ ...s, regenerating: { ...s.regenerating, [id]: false } }))
+
+      if (!clip) say('That re-cut is taking unusually long; refresh to check.')
+      else say(clip.status === 'ready' ? 'Clip recut.' : 'That re-cut failed.')
     },
-    [say, fail, state.jobId],
+    [say, fail, pollClip],
   )
 
   // ---- player -------------------------------------------------------------
@@ -776,20 +817,32 @@ export function useSnipline() {
 
   // ---- editor -------------------------------------------------------------
 
+  /**
+   * Open a clip for editing, with the handles on its actual cut.
+   *
+   * The ratio defaults to one the job really rendered. Offering a crop with no
+   * file behind it was harmless while the buttons did nothing, but they pick the
+   * preview and the download now.
+   */
   const openEditor = useCallback(
     (id: string) =>
-      patch({ screen: 'editor', editing: id, ...DEFAULT_TRIM, ratio: '9/16', captionIdx: 0 }),
-    [patch],
+      setState((s) => {
+        const clip = s.clips.find((c) => c.id === id)
+        return {
+          ...s,
+          screen: 'editor',
+          editing: id,
+          ...(clip ? trimForClip(clip) : DEFAULT_TRIM),
+          ratio: firstEnabled(s.formats),
+        }
+      }),
+    [],
   )
 
   const setTrim = useCallback((which: 'in' | 'out', value: number) => {
     setState((s) => clampTrim(s, which, value))
   }, [])
 
-  /** Drop an in/out point where the playhead is sitting. */
-  const markTrim = useCallback((which: 'in' | 'out') => {
-    setState((s) => clampTrim(s, which, s.playhead))
-  }, [])
 
   const beginDrag = useCallback(
     (which: 'in' | 'out') => (e: ReactPointerEvent) => {
@@ -813,51 +866,65 @@ export function useSnipline() {
 
   /** Snap the trim window to a transcript line. */
   const pickRange = useCallback(
-    (a: number, b: number) =>
-      patch({ trimIn: Math.max(0, a), trimOut: Math.min(100, b), playhead: Math.max(0, a) }),
+    (a: number, b: number) => patch({ trimIn: Math.max(0, a), trimOut: Math.min(100, b) }),
     [patch],
   )
 
-  const resetTrim = useCallback(() => patch(DEFAULT_TRIM), [patch])
+  /** Back to the cut the analyser chose, not to a fixed pair of percentages. */
+  const resetTrim = useCallback(
+    () =>
+      setState((s) => {
+        const clip = s.clips.find((c) => c.id === s.editing)
+        return { ...s, ...(clip ? trimForClip(clip) : DEFAULT_TRIM) }
+      }),
+    [],
+  )
 
-  const setRatio = useCallback((ratio: string) => patch({ ratio }), [patch])
+  const setRatio = useCallback((ratio: Ratio) => patch({ ratio }), [patch])
 
-  const rewriteCaption = useCallback(() => {
-    setState((s) => ({ ...s, captionIdx: s.captionIdx ? 0 : 1 }))
-    say('Caption rewritten. (Prototype — not saved.)')
-  }, [say])
+  const backToResults = useCallback(() => patch({ screen: 'results' }), [patch])
 
-  const togglePlay = useCallback(() => {
-    setState((s) => {
-      if (s.playing) {
-        stopPlayback()
-        return { ...s, playing: false }
+  /**
+   * Save an edited trim and download the result.
+   *
+   * Two calls, because they mean different things: PATCH writes the range, and
+   * /redo re-renders whatever range the row holds. The wait is real -- a re-cut
+   * re-downloads the source with yt-dlp -- so this stays on the editor screen
+   * with the button busy rather than pretending to be instant.
+   */
+  const saveTrim = useCallback(
+    async (clipId: string, startSeconds: number, endSeconds: number, ratio: Ratio) => {
+      patch({ pending: 'saveClip' })
+      try {
+        await api.patchClip(clipId, startSeconds, endSeconds)
+        await api.redoClip(clipId)
+      } catch (e) {
+        fail(e)
+        return
       }
-      stopPlayback()
-      playTimer.current = window.setInterval(() => {
-        setState((cur) => {
-          const next = cur.playhead + 0.7
-          if (next >= cur.trimOut) {
-            stopPlayback()
-            return { ...cur, playhead: cur.trimIn, playing: false }
-          }
-          return { ...cur, playhead: next }
-        })
-      }, 90)
-      return { ...s, playing: true, playhead: s.trimIn }
-    })
-  }, [stopPlayback])
 
-  const backToResults = useCallback(() => {
-    stopPlayback()
-    patch({ screen: 'results', playing: false })
-  }, [patch, stopPlayback])
+      say('Saved. Re-rendering this clip…')
+      const clip = await pollClip(clipId)
+      patch({ pending: null })
 
-  const saveAndDownload = useCallback(() => {
-    stopPlayback()
-    patch({ screen: 'results', playing: false })
-    say('Editor edits are not saved yet — download from the grid.')
-  }, [patch, say, stopPlayback])
+      if (!clip) {
+        say('That re-cut is taking unusually long; check back from the grid.')
+        return
+      }
+      if (clip.status !== 'ready') {
+        say('That re-cut failed.')
+        return
+      }
+
+      const url = clip.renders[ratio]?.url
+      if (!url) {
+        say(`Re-cut saved, but ${ratio} is not ready.`)
+        return
+      }
+      await api.download([clipId], ratio, url)
+    },
+    [patch, say, fail, pollClip],
+  )
 
   // ---- settings -----------------------------------------------------------
 
@@ -910,15 +977,12 @@ export function useSnipline() {
     closePlayer,
     openEditor,
     setTrim,
-    markTrim,
     beginDrag,
     pickRange,
     resetTrim,
     setRatio,
-    rewriteCaption,
-    togglePlay,
     backToResults,
-    saveAndDownload,
+    saveTrim,
     setPwCurrent,
     setPwNext,
     updatePassword,
