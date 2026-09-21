@@ -18,7 +18,7 @@ import { enqueueProcess, boss, PROCESS_QUEUE } from '../queue.ts'
 import { subscribe, ensureListening } from '../events.ts'
 import { isTerminal, RATIOS } from '../../../shared/types.ts'
 import type { ProjectDTO, QuotaDTO, Ratio } from '../../../shared/types.ts'
-import { s3 } from '../s3.ts'
+import { storage } from '../s3.ts'
 
 const createBody = z.object({
   videoId: z.string().uuid(),
@@ -328,13 +328,17 @@ export async function deleteJobArtifacts(jobId: string) {
       ),
     )
 
-  const objects = renderRows.flatMap((r) => [r.s3Key, r.thumbKey].filter(Boolean) as string[])
-  if (objects.length) {
-    await s3.deleteMany(objects).catch((e) => {
-      // A storage hiccup must not block the regenerate; worst case is orphans.
-      console.error('[jobs] failed to delete old renders:', e.message)
-    })
-  }
+  // Grouped by the backend each row names, never a flat key list: keys sent to
+  // the wrong backend delete nothing and still report success, which would
+  // orphan the objects while the database insisted they were gone. A storage
+  // hiccup is still survivable -- deleteMany reports and moves on, worst case
+  // orphans.
+  const objects = renderRows.flatMap((r) =>
+    [r.s3Key, r.thumbKey]
+      .filter(Boolean)
+      .map((key) => ({ storage: r.storage, key: key as string })),
+  )
+  if (objects.length) await storage.deleteMany(objects)
 
   await db.delete(clips).where(eq(clips.jobId, jobId))
 }

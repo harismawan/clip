@@ -5,7 +5,7 @@ import { Readable } from 'node:stream'
 import archiver from 'archiver'
 import { db, clips, renders, jobs } from '../db/index.ts'
 import { ownedClip, ownedClips } from '../ownership.ts'
-import { s3 } from '../s3.ts'
+import { storage } from '../s3.ts'
 import { enqueueRecut } from '../queue.ts'
 import { RATIOS } from '../../../shared/types.ts'
 import type { Ratio } from '../../../shared/types.ts'
@@ -123,7 +123,10 @@ downloadsRoutes.post('/', async (c) => {
         const clip = titleById.get(r.clipId)
         const idx = String((clip?.idx ?? 0) + 1).padStart(2, '0')
         const name = `${idx}_${slugify(clip?.title ?? 'clip')}.mp4`
-        const stream = await s3.getStream(r.s3Key!)
+        // Per row: a zip can legitimately span backends when a project was
+        // re-cut after the write target moved. Clients are memoised, so this is
+        // a map lookup rather than a new connection per clip.
+        const stream = await (await storage.get(r.storage)).getStream(r.s3Key!)
         archive.append(Readable.from(stream as any), { name })
       }
       await archive.finalize()

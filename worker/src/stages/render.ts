@@ -9,11 +9,12 @@
 import { join } from 'node:path'
 import { writeFile, readFile, unlink } from 'node:fs/promises'
 import { eq } from 'drizzle-orm'
-import { db, clips, renders, keys, s3 } from '../db.ts'
+import { db, clips, renders, keys } from '../db.ts'
 import { run, exists } from '../../../shared/proc.ts'
 import { RATIO_DIMS } from '../../../shared/types.ts'
 import type { Ratio } from '../../../shared/types.ts'
 import type { TranscriptSegment, Clip } from '../../../shared/schema.ts'
+import type { S3 } from '../../../shared/s3.ts'
 import { cutAccurate, thumbnail, reframeStatic, probeDimensions } from '../ffmpeg.ts'
 import { buildClipAss } from '../ass.ts'
 
@@ -42,6 +43,12 @@ export interface RenderClipOptions {
   sourcePath: string
   workDir: string
   ratios: Ratio[]
+  /**
+   * Where this job's output goes. Resolved once by processJob rather than per
+   * clip, so one job lands entirely in one backend even if the active target is
+   * flipped while it runs.
+   */
+  store: { id: string; s3: S3 }
   segments: TranscriptSegment[]
   burnSubtitles: boolean
 }
@@ -115,8 +122,8 @@ export async function renderClip(opts: RenderClipOptions): Promise<void> {
       const thumbKey = keys.thumb(opts.jobId, clip.id, ratio)
 
       await Promise.all([
-        s3.upload(s3Key, mp4, 'video/mp4'),
-        s3.upload(thumbKey, jpg, 'image/jpeg'),
+        opts.store.s3.upload(s3Key, mp4, 'video/mp4'),
+        opts.store.s3.upload(thumbKey, jpg, 'image/jpeg'),
       ])
 
       const actual = await probeDimensions(outPath).catch(() => ({
@@ -129,6 +136,9 @@ export async function renderClip(opts: RenderClipOptions): Promise<void> {
         .set({
           s3Key,
           thumbKey,
+          // Written in the same statement as the keys it describes: a key and
+          // its location must never be able to disagree.
+          storage: opts.store.id,
           width: actual.width,
           height: actual.height,
           sizeBytes: mp4.byteLength,

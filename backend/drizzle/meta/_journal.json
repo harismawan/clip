@@ -36,6 +36,13 @@
       "when": 1789972103209,
       "tag": "0004_low_imperial_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1789981196589,
+      "tag": "0005_wooden_darkhawk",
+      "breakpoints": true
     }
   ]
 }
