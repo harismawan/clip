@@ -32,6 +32,49 @@ import { ownedClip } from '../ownership.ts'
 
 export const mediaRoutes = new Hono()
 
+/** An inclusive byte range, or null for "send the whole thing". */
+export type ByteRange = { start: number; end: number }
+
+/**
+ * Parse a Range header against a known object size.
+ *
+ * Returns null when the whole object should be sent (absent, malformed, or a
+ * multi-range request we decline to encode as multipart), and 'unsatisfiable'
+ * when the client asked for bytes that do not exist -- which is a 416, not a
+ * silent clamp, because quietly returning different bytes than were requested
+ * corrupts a seek.
+ */
+export function parseRange(
+  header: string | null | undefined,
+  size: number,
+): ByteRange | 'unsatisfiable' | null {
+  if (!header) return null
+
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim())
+  if (!match) return null
+
+  const [, rawStart, rawEnd] = match
+  if (rawStart === '' && rawEnd === '') return null
+  if (size <= 0) return 'unsatisfiable'
+
+  let start: number
+  let end: number
+
+  if (rawStart === '') {
+    // Suffix form: the last N bytes.
+    const wanted = Number(rawEnd)
+    if (wanted <= 0) return 'unsatisfiable'
+    start = Math.max(0, size - wanted)
+    end = size - 1
+  } else {
+    start = Number(rawStart)
+    end = rawEnd === '' ? size - 1 : Math.min(Number(rawEnd), size - 1)
+  }
+
+  if (start >= size || end < start) return 'unsatisfiable'
+  return { start, end }
+}
+
 /** The signed-in user id, or null. Media answers 404 rather than 401. */
 async function viewerId(c: Context): Promise<string | null> {
   const token = getCookie(c, SESSION_COOKIE) ?? ''
@@ -72,15 +115,12 @@ mediaRoutes.get('/:file', async (c) => {
   const key = kind === 'video' ? render?.s3Key : render?.thumbKey
   if (!key || render.status !== 'ready') return c.json({ error: 'Not ready' }, 404)
 
-  const body = await s3.getStream(key)
-
   const headers: Record<string, string> = {
     'Content-Type': kind === 'video' ? 'video/mp4' : 'image/jpeg',
     // Signed URLs already expire; caching until then avoids re-streaming a
     // thumbnail on every grid render.
     'Cache-Control': 'private, max-age=3600',
   }
-  if (render.sizeBytes && kind === 'video') headers['Content-Length'] = String(render.sizeBytes)
 
   if (c.req.query('download') === '1') {
     const [clip] = await db.select().from(clips).where(eq(clips.id, clipId)).limit(1)
@@ -88,6 +128,41 @@ mediaRoutes.get('/:file', async (c) => {
     const name = `${idx}_${slugify(clip?.title ?? 'clip')}.mp4`
     headers['Content-Disposition'] = `attachment; filename="${name}"`
   }
+
+  /**
+   * Range requests, so the player's scrubber works.
+   *
+   * Only for video, and only when the stored size is known -- a range has to be
+   * resolved against a length, and without Accept-Ranges the browser will not
+   * ask for one anyway. Thumbnails are small enough that it never matters.
+   */
+  const size = render.sizeBytes ?? 0
+  const rangeable = kind === 'video' && size > 0
+  const wanted = rangeable ? parseRange(c.req.header('range'), size) : null
+
+  if (wanted === 'unsatisfiable') {
+    return new Response(null, {
+      status: 416,
+      headers: { 'Content-Range': `bytes */${size}`, 'Accept-Ranges': 'bytes' },
+    })
+  }
+
+  if (rangeable) headers['Accept-Ranges'] = 'bytes'
+
+  if (wanted) {
+    const body = await s3.getStream(key, `bytes=${wanted.start}-${wanted.end}`)
+    return new Response(Readable.toWeb(Readable.from(body as any)) as ReadableStream, {
+      status: 206,
+      headers: {
+        ...headers,
+        'Content-Range': `bytes ${wanted.start}-${wanted.end}/${size}`,
+        'Content-Length': String(wanted.end - wanted.start + 1),
+      },
+    })
+  }
+
+  const body = await s3.getStream(key)
+  if (rangeable) headers['Content-Length'] = String(size)
 
   return new Response(Readable.toWeb(Readable.from(body as any)) as ReadableStream, { headers })
 })

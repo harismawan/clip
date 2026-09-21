@@ -8,7 +8,7 @@
  * through here makes the owner check impossible to omit rather than merely
  * documented.
  */
-import { and, desc, eq, gte, inArray, count } from 'drizzle-orm'
+import { and, desc, eq, gte, inArray, isNull, count } from 'drizzle-orm'
 import { db, jobs, clips } from './db/index.ts'
 import { isTerminal } from '../../shared/types.ts'
 import { jobStatus } from '../../shared/schema.ts'
@@ -25,7 +25,7 @@ export async function ownedJob(userId: string, jobId: string): Promise<Job | nul
   const [job] = await db
     .select()
     .from(jobs)
-    .where(and(eq(jobs.id, jobId), eq(jobs.userId, userId)))
+    .where(and(eq(jobs.id, jobId), eq(jobs.userId, userId), isNull(jobs.deletedAt)))
     .limit(1)
   return job ?? null
 }
@@ -65,7 +65,13 @@ export async function activeJob(userId: string): Promise<Job | null> {
   const [job] = await db
     .select()
     .from(jobs)
-    .where(and(eq(jobs.userId, userId), inArray(jobs.status, ACTIVE_STATUSES)))
+    .where(
+      and(
+        eq(jobs.userId, userId),
+        inArray(jobs.status, ACTIVE_STATUSES),
+        isNull(jobs.deletedAt),
+      ),
+    )
     .orderBy(desc(jobs.createdAt))
     .limit(1)
   return job ?? null

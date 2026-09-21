@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
-import { eq, and, desc, inArray } from 'drizzle-orm'
+import { eq, and, desc, inArray, isNull } from 'drizzle-orm'
 import { db, jobs, videos, clips, renders } from '../db/index.ts'
 import {
   ownedJob,
@@ -218,26 +218,65 @@ jobsRoutes.post('/:id/regenerate', async (c) => {
   return c.json({ jobId: id })
 })
 
-/** Completed jobs, newest first. */
-jobsRoutes.get('/', async (c) => {
+/**
+ * Delete a project. Reachable as DELETE /api/projects/:id too -- index.ts mounts
+ * this router under both prefixes.
+ */
+jobsRoutes.delete('/:id', async (c) => {
+  const id = c.req.param('id')
+  const job = await ownedJob(c.get('user').id, id)
+  if (!job) return c.json({ error: 'Job not found' }, 404)
+
+  // Cancel first: deleting the clips of a job the worker is still writing to
+  // would race it, and the worker only notices a cancel at a stage boundary.
+  if (!isTerminal(job.status)) {
+    await db
+      .update(jobs)
+      .set({ status: 'cancelled', stage: 'Cancelled', completedAt: new Date() })
+      .where(eq(jobs.id, id))
+    await boss.deleteJob(PROCESS_QUEUE, id).catch(() => {})
+  }
+
+  await softDeleteJob(id)
+  return c.json({ ok: true })
+})
+
+/** A user's completed, undeleted projects, newest first. */
+export async function listProjects(userId: string): Promise<ProjectDTO[]> {
   const rows = await db
     .select()
     .from(jobs)
     .innerJoin(videos, eq(jobs.videoId, videos.id))
-    .where(and(eq(jobs.status, 'completed'), eq(jobs.userId, c.get('user').id)))
+    .where(
+      and(eq(jobs.status, 'completed'), eq(jobs.userId, userId), isNull(jobs.deletedAt)),
+    )
     .orderBy(desc(jobs.completedAt))
     .limit(100)
 
-  const out: ProjectDTO[] = rows.map((r) => ({
+  return rows.map((r) => ({
     id: r.jobs.id,
     title: r.videos.title,
     source: toSourceDTO(r.videos, r.jobs.clipCount),
     clipCount: r.jobs.clipCount,
     createdAt: (r.jobs.completedAt ?? r.jobs.createdAt).getTime(),
   }))
+}
 
-  return c.json(out)
-})
+jobsRoutes.get('/', async (c) => c.json(await listProjects(c.get('user').id)))
+
+/**
+ * Delete a project: purge its clips and their S3 objects, then tombstone the row.
+ *
+ * The row stays because `quotaUsage` counts rows -- a hard delete would refund a
+ * daily slot and let anyone reset the cap by clearing their history. The video
+ * and transcript rows are deliberately untouched: they are a URL-keyed cache
+ * shared between users, and `jobs.video_id` cascades, so deleting a video would
+ * take somebody else's jobs with it.
+ */
+export async function softDeleteJob(jobId: string) {
+  await deleteJobArtifacts(jobId)
+  await db.update(jobs).set({ deletedAt: new Date() }).where(eq(jobs.id, jobId))
+}
 
 async function loadJob(userId: string, id: string) {
   const job = await ownedJob(userId, id)

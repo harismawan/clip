@@ -1,6 +1,56 @@
+import { useState } from 'react'
 import { Button } from '../components/Button'
 import { ago } from '../lib/format'
 import { useApp } from '../state/AppContext'
+
+/**
+ * Delete, behind a confirm.
+ *
+ * A project is minutes of CPU and cannot be restored, so a single stray click
+ * must not destroy one. The confirm is inline rather than a dialog because this
+ * codebase has no modal primitive and one button does not justify inventing one.
+ */
+function DeleteProject({ id, title }: { id: string; title: string }) {
+  const { state, deleteProject } = useApp()
+  const [confirming, setConfirming] = useState(false)
+  const busy = state.pending === `deleteProject:${id}`
+
+  if (busy) {
+    return <span className="flex-none text-[12.5px] text-black/35">Deleting…</span>
+  }
+
+  if (confirming) {
+    return (
+      <span className="flex flex-none items-center gap-2.5">
+        <button
+          type="button"
+          onClick={() => deleteProject(id)}
+          className="cursor-pointer text-[12.5px] font-medium text-red-600 hover:text-red-700"
+        >
+          Confirm delete
+        </button>
+        <button
+          type="button"
+          onClick={() => setConfirming(false)}
+          className="cursor-pointer text-[12.5px] font-medium text-black/45 hover:text-ink"
+        >
+          Cancel
+        </button>
+      </span>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setConfirming(true)}
+      aria-label={`Delete ${title}`}
+      className="flex-none cursor-pointer text-[12.5px] font-medium text-black/45 hover:text-red-600"
+    >
+      Delete
+    </button>
+  )
+}
 
 export function ProjectsScreen() {
   const { state, goNew, openProject } = useApp()
@@ -71,6 +121,7 @@ export function ProjectsScreen() {
               >
                 {state.pending === `openProject:${project.id}` ? 'Opening…' : 'Open'}
               </button>
+              <DeleteProject id={project.id} title={project.title} />
             </li>
           ))}
         </ul>

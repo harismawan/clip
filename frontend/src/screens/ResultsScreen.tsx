@@ -18,6 +18,7 @@ export function ResultsScreen() {
     download,
     openEditor,
     redoClip,
+    openPlayer,
   } = useApp()
 
   const src = state.source
@@ -102,7 +103,7 @@ export function ResultsScreen() {
               <article
                 key={clip.id}
                 className={cn(
-                  'overflow-hidden rounded-[18px] border-2 bg-white shadow-card transition-colors',
+                  'group/card relative overflow-hidden rounded-[18px] border-2 bg-white shadow-card transition-colors',
                   clip.selected ? 'border-violet' : 'border-black/10',
                 )}
               >
@@ -162,6 +163,23 @@ export function ResultsScreen() {
                     </span>
                   </span>
                 </button>
+
+                {/*
+                  A sibling of the select button, not a child -- buttons cannot
+                  nest, and the card's own click already means "select". Hidden
+                  until hover or keyboard focus so the grid stays quiet, but
+                  never display:none, or it would leave the tab order.
+                */}
+                {render?.url && (
+                  <button
+                    type="button"
+                    onClick={() => openPlayer(clip.id)}
+                    aria-label={`Play ${clipTitle(clip)}`}
+                    className="absolute top-1/2 left-1/2 z-20 flex size-12 -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full border border-white/25 bg-black/55 text-[15px] leading-none text-white opacity-0 transition-opacity group-hover/card:opacity-100 focus-visible:opacity-100 hover:bg-black/75"
+                  >
+                    ▶
+                  </button>
+                )}
 
                 <div className="px-[11px] pt-2.5 pb-[11px]">
                   <h2 className="m-0 mb-[5px] text-[12.5px] leading-[1.35] font-semibold text-ink">

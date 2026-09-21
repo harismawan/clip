@@ -54,8 +54,15 @@ export function makeS3(cfg: S3Config) {
       })
     },
 
-    async getStream(key: string) {
-      const res = await client.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: key }))
+    /**
+     * `range` is an HTTP byte-range string ("bytes=0-499"), passed straight
+     * through to S3 so a seek fetches only the bytes it needs instead of the
+     * whole object.
+     */
+    async getStream(key: string, range?: string) {
+      const res = await client.send(
+        new GetObjectCommand({ Bucket: cfg.bucket, Key: key, Range: range }),
+      )
       return res.Body as NodeJS.ReadableStream
     },
 

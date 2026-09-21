@@ -15,6 +15,13 @@
       "when": 1789944295737,
       "tag": "0001_romantic_alice",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789951886358,
+      "tag": "0002_famous_mariko_yashida",
+      "breakpoints": true
     }
   ]
 }

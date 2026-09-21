@@ -28,6 +28,7 @@ export type Pending =
   | 'signIn'
   | 'signOut'
   | `openProject:${string}`
+  | `deleteProject:${string}`
 
 export interface SnipState {
   screen: Screen
@@ -66,6 +67,8 @@ export interface SnipState {
   clips: Clip[]
   filter: Ratio
   sortByScore: boolean
+  /** The clip open in the player overlay, if any. Distinct from `editing`. */
+  playingClipId: string | null
   editing: string | null
   trimIn: number
   trimOut: number
@@ -101,6 +104,7 @@ const initialState: SnipState = {
   clips: [],
   filter: '9:16',
   sortByScore: true,
+  playingClipId: null,
   editing: null,
   ...DEFAULT_TRIM,
   ratio: '9/16',
@@ -130,6 +134,18 @@ export function clampTrim(s: SnipState, which: 'in' | 'out', pct: number): SnipS
 /** The window of source video the editor timeline shows, in seconds. */
 export function windowFor(clip: { s: number }) {
   return { start: Math.max(0, clip.s - TIMELINE_LEAD_IN), span: TIMELINE_SPAN }
+}
+
+/**
+ * Whether refocusing the tab should re-fetch the job.
+ *
+ * The SSE stream reconnects on error, but a browser that throttles a background
+ * tab can leave the connection dead without ever firing one, so a job finishing
+ * while the tab is hidden would go unnoticed. Coming back into view is the cue.
+ */
+export function needsCatchUp(jobId: string, status: JobStatus | null): boolean {
+  if (!jobId || !status) return false
+  return status !== 'completed' && status !== 'failed' && status !== 'cancelled'
 }
 
 /**
@@ -445,6 +461,23 @@ export function useSnipline() {
     void loadProjects()
   }, [state.user, loadProjects])
 
+  /**
+   * Catch up when the tab comes back into view.
+   *
+   * Belt and braces next to the stream's own reconnect: a throttled background
+   * tab can have its connection torn down without an error event, so nothing
+   * would re-subscribe and a job that finished meanwhile would look stuck.
+   */
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return
+      if (!needsCatchUp(state.jobId, state.jobStatus)) return
+      void refreshJob(state.jobId)
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [state.jobId, state.jobStatus, refreshJob])
+
   const startJob = useCallback(async () => {
     if (!RATIOS.some((r) => state.formats[r])) {
       say('Pick at least one format to render.')
@@ -585,6 +618,30 @@ export function useSnipline() {
     [patch, refreshJob],
   )
 
+  /** Delete a project for good. The confirm lives in the row that calls this. */
+  const deleteProject = useCallback(
+    async (id: string) => {
+      patch({ pending: `deleteProject:${id}` })
+      try {
+        await api.deleteProject(id)
+        setState((s) => ({
+          ...s,
+          pending: null,
+          projects: s.projects.filter((p) => p.id !== id),
+          // Whatever was on screen from this project is now gone with it.
+          ...(s.jobId === id
+            ? { jobId: '', clips: [], jobDone: false, jobStatus: null, screen: 'projects' as const }
+            : {}),
+        }))
+        say('Project deleted.')
+      } catch (e) {
+        patch({ pending: null })
+        say(e instanceof ApiError ? e.message : 'Could not delete that project.')
+      }
+    },
+    [patch, say],
+  )
+
   // ---- source picking -----------------------------------------------------
 
   const setUrl = useCallback((url: string) => patch({ url }), [patch])
@@ -712,6 +769,11 @@ export function useSnipline() {
     [say, fail, state.jobId],
   )
 
+  // ---- player -------------------------------------------------------------
+
+  const openPlayer = useCallback((id: string) => patch({ playingClipId: id }), [patch])
+  const closePlayer = useCallback(() => patch({ playingClipId: null }), [patch])
+
   // ---- editor -------------------------------------------------------------
 
   const openEditor = useCallback(
@@ -825,6 +887,7 @@ export function useSnipline() {
     goNew,
     goResults,
     openProject,
+    deleteProject,
     setUrl,
     analyze,
     loadSample,
@@ -843,6 +906,8 @@ export function useSnipline() {
     toggleSelectAll,
     download,
     redoClip,
+    openPlayer,
+    closePlayer,
     openEditor,
     setTrim,
     markTrim,
