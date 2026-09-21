@@ -17,6 +17,7 @@ import { analyze } from './stages/analyze.ts'
 import { renderClip } from './stages/render.ts'
 import { validateRanges, textInRange } from './ranges.ts'
 import { wrapHookLine } from './srt.ts'
+import { ownsScratch } from './scratch.ts'
 import { keys, storage } from './db.ts'
 import { RATIOS } from '../../shared/types.ts'
 import type { Ratio } from '../../shared/types.ts'
@@ -173,13 +174,30 @@ export async function processJob(jobId: string): Promise<void> {
   }
 }
 
-/** Download unless a previous run left a usable file behind. */
+/**
+ * Download unless THIS operation already left a usable file behind.
+ *
+ * The ownership check is the whole point. `videos.scratch_path` is global but
+ * names a file inside one operation's scratch directory, and every exit path
+ * deletes that directory -- so adopting another operation's download means
+ * rendering from a file that vanishes when its owner finishes. The process and
+ * re-cut queues poll independently, so a job and a re-cut of the same source
+ * really do overlap.
+ *
+ * Nothing is given up by scoping it: cleanup() nulls the column after every
+ * successful job, so a later operation re-downloads regardless. The only window
+ * in which another operation could ever have read this path was the racy one.
+ */
 async function ensureDownloaded(
   jobId: string,
   video: typeof videos.$inferSelect,
   workDir: string,
 ): Promise<string> {
-  if (video.scratchPath && (await fileExists(video.scratchPath))) {
+  if (
+    video.scratchPath &&
+    ownsScratch(video.scratchPath, workDir) &&
+    (await fileExists(video.scratchPath))
+  ) {
     await report(jobId, 'downloading', 'Using cached download', 1)
     return video.scratchPath
   }
