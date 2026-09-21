@@ -57,5 +57,5 @@ jobs:
             echo "### Deploy: ${{ job.status }}"
             echo ""
             echo "- commit: \`${{ github.sha }}\`"
-            echo "- site: https://clip.mhamzah.id"
+            echo "- site: https://clip2.mhamzah.id"
           } >> "$GITHUB_STEP_SUMMARY"

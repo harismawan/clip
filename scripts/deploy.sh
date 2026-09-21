@@ -13,9 +13,12 @@
 #
 # Deliberately NOT done here:
 #   * touching .env — real secrets, placed once by hand
-#   * `git pull` — you deploy the tree you are looking at, not a moving target
+#   * pulling BY DEFAULT — you deploy the tree you are looking at, not a moving
+#     target. `--pull` opts in, and exists for CI: the GitHub Actions runner is
+#     triggered by a commit on origin/main and has to catch this clone up to it.
 #
 # Usage: scripts/deploy.sh [options]   (run from anywhere)
+#   --pull           fast-forward to origin/main first (refuses a dirty tree)
 #   --skip-infra     don't touch docker compose
 #   --skip-web       don't build/publish the frontend
 #   --skip-api       don't install/migrate/restart the API and worker
@@ -36,15 +39,17 @@ NGINX_REPO_CONF="$REPO_ROOT/deploy/nginx/$SITE"
 PM2_APPS=( "clip-api" "clip-worker" )
 ECOSYSTEM="$REPO_ROOT/ecosystem.config.cjs"
 
-DO_INFRA=1 DO_WEB=1 DO_API=1 DO_NGINX=1 PARALLEL=1
+# DO_PULL defaults off: a human running this deploys what they are looking at.
+DO_INFRA=1 DO_WEB=1 DO_API=1 DO_NGINX=1 PARALLEL=1 DO_PULL=0
 for arg in "$@"; do
   case "$arg" in
+    --pull)       DO_PULL=1 ;;
     --skip-infra) DO_INFRA=0 ;;
     --skip-web)   DO_WEB=0 ;;
     --skip-api)   DO_API=0 ;;
     --skip-nginx) DO_NGINX=0 ;;
     --serial)     PARALLEL=0 ;;
-    -h|--help)    sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)    sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -62,6 +67,65 @@ die()  { printf "\033[31mERROR:\033[0m %s\n" "$*" >&2; exit 1; }
 # Read one key from the root .env without sourcing it -- sourcing would execute
 # whatever is in there and leak every secret into this shell's environment.
 envval() { grep -E "^$1=" "$REPO_ROOT/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"'[:space:]'; }
+
+# --------------------------------------------------------------------- pull
+# Bring this clone up to origin/main, or refuse and explain why.
+#
+# Every guard here protects the same thing: this is the deployment clone, and it
+# is the only copy of anything that is not in git. Nothing below ever discards
+# work -- it stops instead, because a deploy that quietly erases a hand-edit on
+# the server is worse than a deploy that does not happen.
+pull_repo() {
+  need git
+  git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1 \
+    || die "--pull: $REPO_ROOT is not a git clone"
+
+  local branch
+  branch="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)"
+  [ "$branch" = "main" ] || die "--pull: this clone is on '$branch', not main.
+       Deploying would fast-forward the wrong branch. Check it out first."
+
+  # A dirty tree is either work in progress or a hand-edit made on the server.
+  # A merge would ship it unreviewed; a reset would destroy it. Refuse both.
+  if [ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]; then
+    git -C "$REPO_ROOT" status --short | sed 's/^/      /' >&2
+    die "--pull: working tree is dirty (above). Commit, stash or clean it first."
+  fi
+
+  git -C "$REPO_ROOT" fetch --quiet origin main || die "--pull: git fetch failed"
+
+  # Commits that exist only here are invisible to everyone else and would be
+  # stranded by a fast-forward. Say so rather than deploy a tree nobody can
+  # reproduce from the repository.
+  local ahead
+  ahead="$(git -C "$REPO_ROOT" rev-list --count origin/main..HEAD)"
+  [ "$ahead" = 0 ] || die "--pull: this clone has $ahead commit(s) that are not on origin/main.
+       Push them, or reset to origin/main, before deploying."
+
+  local before after
+  before="$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
+  # --ff-only: never a merge commit and never a rebase on the box serving
+  # traffic. If it cannot fast-forward, something is wrong that a human decides.
+  git -C "$REPO_ROOT" merge --ff-only --quiet origin/main \
+    || die "--pull: cannot fast-forward to origin/main (histories have diverged)"
+  after="$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
+
+  if [ "$before" = "$after" ]; then
+    info "already at $after"
+  else
+    # Printed so the CI log says what actually shipped, not just that it did.
+    info "$before -> $after"
+    git -C "$REPO_ROOT" --no-pager log --oneline "$before..$after" | sed 's/^/      /'
+  fi
+}
+
+if [ "$DO_PULL" = 1 ]; then
+  say "pull"
+  # `need` is defined in preflight below; declare it early so pull can use it.
+  need() { command -v "$1" >/dev/null || die "missing required command: $1"; }
+  pull_repo
+  ok "tree matches origin/main"
+fi
 
 # ---------------------------------------------------------------- preflight
 # Fail before mutating anything, rather than half-deploying and stopping.
