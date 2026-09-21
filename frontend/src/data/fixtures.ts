@@ -12,8 +12,9 @@ export interface ClipSeed {
 }
 
 /**
- * PROTOTYPE DATA. The results grid is served by the API now; these remain only
- * because the editor screen is still a mock (Tier A defers it).
+ * PROTOTYPE DATA. The results grid and the editor are served by the API now;
+ * these remain only to give the processing screen's placeholder rows something
+ * to show while a real job is still rendering.
  */
 export const CLIPS: ClipSeed[] = [
   {
@@ -126,14 +127,6 @@ export const CLIPS: ClipSeed[] = [
   },
 ]
 
-/** Headlines a clip picks up after it has been recut. */
-export const ALT_TITLES = [
-  'A tighter cut of this moment',
-  'Same moment, punchier open',
-  'Recut with a colder open',
-  'Trimmed to the punchline',
-]
-
 /**
  * Links the "or try one of these" buttons paste into the box.
  *
@@ -169,7 +162,12 @@ export const CLIP_COUNT_DEFAULT = 12
 
 export const COUNT_HINTS = ['quick pass', 'recommended', 'go wide']
 
-/** Audio levels behind the trim track, as percentages of the strip height. */
+/**
+ * Audio levels behind the trim track, as percentages of the strip height.
+ *
+ * A fallback only: the editor draws `clip.peaks` measured from the real audio,
+ * and falls back to this shape for clips made before peaks were stored.
+ */
 export const WAVE = [
   30, 52, 38, 70, 44, 86, 60, 34, 76, 48, 64, 40, 92, 56, 36, 68, 44, 80, 50, 32, 72, 58, 42, 88,
   54, 38, 66, 46,
@@ -185,6 +183,12 @@ export const EXPORT_SIZES: Record<Ratio, string> = {
 /** Videos a free beta account gets each month. */
 export const FREE_VIDEO_ALLOWANCE = 3
 
-/** Seconds of source shown either side of a clip on the editor timeline. */
+/**
+ * The stretch of source the editor timeline shows, in seconds.
+ *
+ * These MIRROR EDITOR_LEAD_IN and EDITOR_SPAN in shared/types.ts, which the
+ * worker encodes each proxy to. Keep them in step: a clip carries its own
+ * window now, and these are only the fallback for clips that have none.
+ */
 export const TIMELINE_LEAD_IN = 30
 export const TIMELINE_SPAN = 150

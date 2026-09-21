@@ -54,17 +54,23 @@ moving them would change nothing on screen until a re-render).
 
 ## 3. Data model
 
-Migration `backend/drizzle/0006_*.sql`, generated from `shared/schema.ts`. Five
-columns on `clips`:
+Migration `backend/drizzle/0006_silent_the_hand.sql`, generated from
+`shared/schema.ts`. Columns on `clips`:
 
 | column | type | meaning |
 |---|---|---|
 | `proxy_key` | `text` nullable | object key for the 240p window MP4 |
+| `proxy_bytes` | `integer` nullable | size of that object |
 | `strip_key` | `text` nullable | object key for the filmstrip sprite JPEG |
 | `peaks` | `jsonb` (`number[]`) nullable | ~150 RMS values, 0–100 |
 | `window_start` | `double` nullable | first second of source the proxy covers |
 | `window_span` | `double` nullable | proxy duration in seconds |
 | `asset_storage` | `text` → `storage_backends.id`, default `'minio'` | which backend holds the two keys |
+
+`proxy_bytes` was not in the original sketch. A `Range` request has to be
+resolved against a length and the storage interface exposes no HEAD, so without
+a recorded size the editor's scrubber cannot seek — `renders.size_bytes` exists
+for the same reason, and is recorded at the same moment.
 
 All nullable. A null `proxy_key` is the signal that a clip predates this work,
 and is what makes old jobs degrade instead of break (§7).
@@ -205,8 +211,11 @@ previews existed and that regenerating it will produce one.
 
 ## 8. Testing
 
-- `shared` — the peak-bucketing pure function: known PCM in, expected buckets
-  out, including a silent run and a span shorter than the bucket count.
+- `worker` — `peaksFromPcm` and `windowFor` as pure functions: known PCM in,
+  expected buckets out, including a silent run and a span shorter than the
+  bucket count; and the window clamped at each end of the source. (The peak
+  test was sketched as living in `shared`, but both functions are worker-only,
+  and the worker already co-locates its tests.)
 - `backend` — `PATCH /api/clips/:id` rejects `s >= e`, a range past
   `durationSeconds`, a sub-3s window and a job that is not `completed`; the
   media route resolves `proxy`/`strip` kinds from the clips row and still 403s a

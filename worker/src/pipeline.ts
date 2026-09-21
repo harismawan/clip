@@ -6,7 +6,7 @@
  * rather than the job so a regenerate or a re-cut does not pay for them twice.
  */
 import { join } from 'node:path'
-import { mkdir, rm, access } from 'node:fs/promises'
+import { mkdir, rm, access, readFile } from 'node:fs/promises'
 import { eq, desc } from 'drizzle-orm'
 import { db, jobs, videos, transcripts, clips, renders } from './db.ts'
 import { env } from './env.ts'
@@ -15,7 +15,7 @@ import { assertYtdlpFresh, assertDiskSpace, download, probe } from '../../shared
 import { transcribe } from './stages/transcribe.ts'
 import { analyze } from './stages/analyze.ts'
 import { renderClip } from './stages/render.ts'
-import { buildEditorAssets, sizeOf } from './stages/editorAssets.ts'
+import { buildEditorAssets } from './stages/editorAssets.ts'
 import { validateRanges, textInRange } from './ranges.ts'
 import { wrapHookLine } from './srt.ts'
 import { ownsScratch } from './scratch.ts'
@@ -301,14 +301,24 @@ async function storeEditorAssets(
     const proxyKey = keys.proxy(clip.jobId, clip.id)
     const stripKey = keys.strip(clip.jobId, clip.id)
 
-    await store.s3.upload(proxyKey, await Bun.file(built.proxyPath).bytes(), 'video/mp4')
-    await store.s3.upload(stripKey, await Bun.file(built.stripPath).bytes(), 'image/jpeg')
+    const [mp4, jpg] = await Promise.all([
+      readFile(built.proxyPath),
+      readFile(built.stripPath),
+    ])
+
+    await Promise.all([
+      store.s3.upload(proxyKey, mp4, 'video/mp4'),
+      store.s3.upload(stripKey, jpg, 'image/jpeg'),
+    ])
 
     await db
       .update(clips)
       .set({
         proxyKey,
-        proxyBytes: await sizeOf(built.proxyPath),
+        // The Range header the editor's scrubber depends on needs a length, and
+        // the storage interface has no HEAD -- so record it here, at the one
+        // moment the size is known for free.
+        proxyBytes: mp4.byteLength,
         stripKey,
         peaks: built.peaks,
         windowStart: built.window.start,

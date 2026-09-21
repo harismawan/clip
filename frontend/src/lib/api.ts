@@ -2,7 +2,15 @@
  * API client. The prototype made no network calls at all, so this is the whole
  * boundary between the app and the backend.
  */
-import type { Clip, Project, QuotaDTO, Ratio, Source, JobStatus } from '../types'
+import type {
+  Clip,
+  Project,
+  QuotaDTO,
+  Ratio,
+  Source,
+  JobStatus,
+  TranscriptLine,
+} from '../types'
 
 /**
  * Every path here is relative, and there is deliberately no configurable base
@@ -223,6 +231,21 @@ export const api = {
     call<{ ok: boolean }>(`/projects/${id}`, { method: 'DELETE' }),
 
   redoClip: (clipId: string) => call<{ ok: boolean }>(`/clips/${clipId}/redo`, { method: 'POST' }),
+
+  /** Transcript lines covering the clip's editor window, not just the cut. */
+  clipTranscript: (clipId: string) =>
+    call<{ segments: TranscriptLine[] }>(`/clips/${clipId}/transcript`),
+
+  /**
+   * Save an edited in/out point. This only writes the row -- re-rendering is a
+   * separate `redoClip`, because the worker re-cuts from whatever range the row
+   * holds.
+   */
+  patchClip: (clipId: string, s: number, e: number) =>
+    call<Omit<Clip, 'selected'>>(`/clips/${clipId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ s, e }),
+    }),
 
   subscribe,
 

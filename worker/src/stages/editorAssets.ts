@@ -15,7 +15,6 @@
  * one at a time, and when a codec is missing the failure names which step.
  */
 import { join } from 'node:path'
-import { stat } from 'node:fs/promises'
 import { run, runBinary } from '../../../shared/proc.ts'
 import { EDITOR_LEAD_IN as LEAD_IN, EDITOR_SPAN as SPAN } from '../../../shared/types.ts'
 import { probeDuration } from '../ffmpeg.ts'
@@ -221,10 +220,4 @@ async function peaksOf(path: string): Promise<number[]> {
   } catch {
     return Array.from({ length: PEAK_BUCKETS }, () => 0)
   }
-}
-
-/** Byte size of a written asset, for the Range header the scrubber depends on. */
-export async function sizeOf(path: string): Promise<number> {
-  const s = await stat(path)
-  return s.size
 }

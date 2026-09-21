@@ -4,10 +4,11 @@ import { Logo } from './Logo'
 /**
  * Shown instead of the editor below the `md` breakpoint.
  *
- * The editor is still the fixtures-backed prototype -- a fake playhead, a
- * synthetic filmstrip, an 11px trim handle -- and its header cannot fit a phone
- * without clipping its own save button off-screen. Rather than ship that, say
- * plainly that it needs a bigger screen.
+ * The reason is layout, not readiness: the editor's header alone packs ~487px
+ * of non-shrinking, nowrap controls, so on a 335px viewport it clips its own
+ * save button off-screen with no way to reach it, and an 11px trim handle is
+ * not a touch target. Rather than ship that, say plainly it needs a wider
+ * screen.
  *
  * It renders outside AppShell, like the editor it replaces, so it carries its
  * own way back; there is no nav chrome here to fall back on.

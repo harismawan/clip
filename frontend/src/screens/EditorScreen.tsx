@@ -1,23 +1,25 @@
-import { useEffect } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '../components/Button'
 import { Chip } from '../components/Chip'
 import { EditorUnavailable } from '../components/EditorUnavailable'
 import { TrimHandle } from '../components/TrimHandle'
 import { FEATURES } from '../config'
-import { CLIPS, WAVE } from '../data/fixtures'
+import { RATIOS, WAVE } from '../data/fixtures'
+import { api } from '../lib/api'
 import { cn } from '../lib/cn'
 import { clipTitle } from '../lib/derive'
 import { fmt } from '../lib/format'
 import { useIsDesktop } from '../lib/media'
 import { useApp } from '../state/AppContext'
-import { windowFor } from '../state/useSnipline'
-import type { Clip } from '../types'
+import { pctOf, windowFor } from '../state/useSnipline'
+import type { Clip, Ratio, TranscriptLine } from '../types'
 
-const CROPS = [
-  { value: '9/16', label: '9:16', box: 'w-[52px] h-[92px]' },
-  { value: '1/1', label: '1:1', box: 'w-[52px] h-[52px]' },
-  { value: '4/5', label: '4:5', box: 'w-[52px] h-[65px]' },
-]
+/** Box sizes for the crop buttons, in the same order as RATIOS. */
+const CROP_BOX: Record<Ratio, string> = {
+  '9:16': 'w-[52px] h-[92px]',
+  '1:1': 'w-[52px] h-[52px]',
+  '4:5': 'w-[52px] h-[65px]',
+}
 
 const FILMSTRIP_FRAMES = 16
 const TICKS = 6
@@ -31,16 +33,62 @@ export function EditorScreen() {
     trackRef,
     say,
     backToResults,
-    saveAndDownload,
+    saveTrim,
     setRatio,
-    rewriteCaption,
     setTrim,
-    markTrim,
     beginDrag,
     pickRange,
     resetTrim,
-    togglePlay,
+    redoClip,
   } = useApp()
+
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const [playing, setPlaying] = useState(false)
+  /** Position on the visible timeline, 0-100. Driven by the video's own clock. */
+  const [playhead, setPlayhead] = useState(0)
+  const [transcript, setTranscript] = useState<TranscriptLine[] | null>(null)
+
+  const clip: Clip | undefined = state.clips.find((c) => c.id === state.editing)
+
+  const win = windowFor(clip ?? { s: 0 })
+  const inSec = win.start + (win.span * state.trimIn) / 100
+  const outSec = win.start + (win.span * state.trimOut) / 100
+  const nudgeStep = (NUDGE_SECONDS / win.span) * 100
+
+  /**
+   * Percentage on the timeline to a time on the proxy.
+   *
+   * The proxy begins at the window's start, not at zero, so its clock is offset
+   * from the source by exactly `win.start`.
+   */
+  const toProxyTime = useCallback((pct: number) => (pct / 100) * win.span, [win.span])
+
+  const seek = useCallback(
+    (pct: number) => {
+      setPlayhead(pct)
+      const video = videoRef.current
+      if (video) video.currentTime = toProxyTime(pct)
+    },
+    [toProxyTime],
+  )
+
+  const togglePlay = useCallback(() => {
+    const video = videoRef.current
+    if (!video) return
+    if (!video.paused) {
+      video.pause()
+      return
+    }
+    // Starting outside the trim would play material the export will not contain.
+    if (playhead < state.trimIn || playhead >= state.trimOut) seek(state.trimIn)
+    void video.play().catch(() => say('Could not start playback.'))
+  }, [playhead, state.trimIn, state.trimOut, seek, say])
+
+  /** Drop an in or out point where the playhead is sitting. */
+  const markTrim = useCallback(
+    (which: 'in' | 'out') => setTrim(which, playhead),
+    [setTrim, playhead],
+  )
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -61,6 +109,20 @@ export function EditorScreen() {
     return () => window.removeEventListener('keydown', onKey)
   }, [backToResults, markTrim, togglePlay])
 
+  // The transcript covers the whole window, not just the cut: a line you cannot
+  // see is a line you cannot trim to.
+  useEffect(() => {
+    if (!clip) return
+    let cancelled = false
+    void api
+      .clipTranscript(clip.id)
+      .then((r) => !cancelled && setTranscript(r.segments))
+      .catch(() => !cancelled && setTranscript([]))
+    return () => {
+      cancelled = true
+    }
+  }, [clip?.id])
+
   /**
    * Below `md` the editor is replaced wholesale rather than reflowed.
    *
@@ -70,50 +132,29 @@ export function EditorScreen() {
    * hook order.
    */
   if (!isDesktop) {
+    return <EditorUnavailable clipTitle={clip?.t} onBack={backToResults} />
+  }
+
+  // Reachable only if the clip vanished under us -- a delete in another tab, or
+  // a reload that landed here before the job was re-fetched. The prototype fell
+  // back to a fixture here, which quietly showed somebody a clip that was not
+  // theirs and could not be saved.
+  if (!clip) {
     return (
-      <EditorUnavailable
-        clipTitle={state.clips.find((c) => c.id === state.editing)?.t}
-        onBack={backToResults}
-      />
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 bg-night px-6 text-center">
+        <p className="m-0 text-[13px] text-white/60">That clip is no longer available.</p>
+        <Button onClick={backToResults} className="h-10 px-5 text-[12.5px]">
+          Back to clips
+        </Button>
+      </div>
     )
   }
 
-  // The editor is still a prototype (Tier A defers it), so it falls back to
-  // fixture data when opened without a real clip in hand.
-  const clip: Clip = state.clips.find((c) => c.id === state.editing) ?? {
-    ...CLIPS[0],
-    id: 'prototype',
-    idx: 0,
-    status: 'ready',
-    renders: {},
-    selected: false,
-  }
-  const win = windowFor(clip)
-  const inSec = win.start + (win.span * state.trimIn) / 100
-  const outSec = win.start + (win.span * state.trimOut) / 100
-  const nudgeStep = (NUDGE_SECONDS / win.span) * 100
+  const ratio = state.ratio as Ratio
+  const busy = state.pending === 'saveClip'
+  const recutting = !!state.regenerating[clip.id]
 
-  /** Position on the visible timeline, as a percentage, for a source offset. */
-  const pctAt = (offset: number) => ((clip.s + offset - win.start) / win.span) * 100
-
-  const transcript = [
-    { ts: fmt(clip.s - 6), text: 'and then I ran it against prod by accident', from: -6, to: 0 },
-    { ts: fmt(clip.s), text: clip.sn.replace(/^…|…$/g, ''), from: 0, to: 24 },
-    {
-      ts: fmt(clip.s + 24),
-      text: 'and honestly my first thought was, well, that’s the product gone',
-      from: 24,
-      to: clip.e - clip.s,
-    },
-    {
-      ts: fmt(clip.e),
-      text: 'anyway, back up your stuff. that’s the whole lesson',
-      from: clip.e - clip.s,
-      to: clip.e - clip.s + 18,
-    },
-  ]
-
-  const playheadLeft = Math.max(state.trimIn, Math.min(state.trimOut, state.playhead))
+  const playheadLeft = Math.max(state.trimIn, Math.min(state.trimOut, playhead))
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-night">
@@ -136,13 +177,18 @@ export function EditorScreen() {
         <div className="ml-auto flex flex-none gap-2.5">
           <Button
             variant="onDark"
-            onClick={() => say('Recutting this clip…')}
+            disabled={busy || recutting}
+            onClick={() => void redoClip(clip.id)}
             className="h-9 px-[15px] text-[12.5px]"
           >
-            Regenerate this clip
+            {recutting ? 'Recutting…' : 'Regenerate this clip'}
           </Button>
-          <Button onClick={saveAndDownload} className="h-9 px-[18px] text-[12.5px]">
-            Save &amp; download
+          <Button
+            disabled={busy || recutting}
+            onClick={() => void saveTrim(clip.id, inSec, outSec, ratio)}
+            className="h-9 px-[18px] text-[12.5px]"
+          >
+            {busy ? 'Saving…' : 'Save & download'}
           </Button>
         </div>
       </header>
@@ -150,15 +196,49 @@ export function EditorScreen() {
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <div className="flex min-w-0 flex-1 items-center justify-center gap-[22px] p-[22px]">
           <div
-            className="hatch-night-lg relative flex h-full max-h-[420px] flex-col justify-end rounded-xl border-2 border-dashed border-violet/55 p-[18px]"
-            style={{ aspectRatio: state.ratio }}
+            className={cn(
+              'relative flex h-full max-h-[420px] flex-col justify-end overflow-hidden rounded-xl p-[18px]',
+              clip.proxyUrl
+                ? 'bg-black'
+                : 'hatch-night-lg border-2 border-dashed border-violet/55',
+            )}
+            style={{ aspectRatio: ratio.replace(':', '/') }}
           >
-            {state.playing && (
-              <span className="absolute top-3.5 left-3.5 rounded-[5px] bg-violet/85 px-[7px] py-[3px] text-[10.5px] font-semibold text-white">
+            {clip.proxyUrl && (
+              <video
+                ref={videoRef}
+                src={clip.proxyUrl}
+                poster={clip.renders[ratio]?.thumbUrl ?? undefined}
+                playsInline
+                preload="metadata"
+                // Cover, not contain: the box is the export's frame, so this is
+                // the closest a centre crop gets to what the render will hold.
+                className="absolute inset-0 size-full object-cover"
+                onPlay={() => setPlaying(true)}
+                onPause={() => setPlaying(false)}
+                onTimeUpdate={(e) => {
+                  const video = e.currentTarget
+                  const pct = (video.currentTime / win.span) * 100
+                  // Loop the trim rather than the whole window: the point of the
+                  // preview is the cut, and running past the out point shows
+                  // material the export will not contain.
+                  if (pct >= state.trimOut) {
+                    video.currentTime = toProxyTime(state.trimIn)
+                    setPlayhead(state.trimIn)
+                    return
+                  }
+                  setPlayhead(pct)
+                }}
+              />
+            )}
+
+            {playing && (
+              <span className="absolute top-3.5 left-3.5 z-10 rounded-[5px] bg-violet/85 px-[7px] py-[3px] text-[10.5px] font-semibold text-white">
                 playing
               </span>
             )}
-            <p className="m-0 text-center text-[17px] leading-[1.25] font-bold whitespace-pre-line text-white [text-shadow:0_2px_6px_rgba(0,0,0,.6)]">
+
+            <p className="relative m-0 text-center text-[17px] leading-[1.25] font-bold whitespace-pre-line text-white [text-shadow:0_2px_6px_rgba(0,0,0,.6)]">
               {clip.line}
             </p>
           </div>
@@ -167,23 +247,31 @@ export function EditorScreen() {
             <legend className="p-0 text-[10.5px] font-semibold tracking-[.07em] text-white/40 uppercase">
               Crop
             </legend>
-            {CROPS.map((crop) => {
-              const on = state.ratio === crop.value
+            {RATIOS.map((r) => {
+              const on = ratio === r
+              // A job renders only the formats it was started with, so the rest
+              // would promise a file that does not exist.
+              const rendered = !!clip.renders[r]
               return (
                 <button
-                  key={crop.value}
+                  key={r}
                   type="button"
                   aria-pressed={on}
-                  onClick={() => setRatio(crop.value)}
+                  disabled={!rendered}
+                  title={rendered ? undefined : `This project did not render ${r}.`}
+                  onClick={() => setRatio(r)}
                   className={cn(
-                    'flex cursor-pointer items-center justify-center rounded-[7px] border-[1.5px] text-[11px] font-semibold transition-colors',
-                    crop.box,
-                    on
-                      ? 'border-violet bg-violet/16 text-white'
-                      : 'border-white/18 bg-transparent text-white/60 hover:border-white/40',
+                    'flex items-center justify-center rounded-[7px] border-[1.5px] text-[11px] font-semibold transition-colors',
+                    CROP_BOX[r],
+                    !rendered && 'cursor-not-allowed border-white/10 text-white/25',
+                    rendered && 'cursor-pointer',
+                    rendered && on && 'border-violet bg-violet/16 text-white',
+                    rendered &&
+                      !on &&
+                      'border-white/18 bg-transparent text-white/60 hover:border-white/40',
                   )}
                 >
-                  {crop.label}
+                  {r}
                 </button>
               )
             })}
@@ -195,34 +283,16 @@ export function EditorScreen() {
             <h2 className="m-0 mb-2.5 text-[10.5px] font-semibold tracking-[.07em] text-white/40 uppercase">
               Transcript — click a line to trim to it
             </h2>
-            <div className="flex flex-col gap-0.5">
-              {transcript.map((line) => {
-                const a = pctAt(line.from)
-                const b = pctAt(line.to)
-                const inRange = state.trimIn <= a + 0.5 && b <= state.trimOut + 0.5
-                return (
-                  <button
-                    key={line.ts + line.text}
-                    type="button"
-                    onClick={() => pickRange(a, b)}
-                    className={cn(
-                      'flex cursor-pointer gap-2.5 rounded-[7px] px-[9px] py-[7px] text-left text-[12.5px] leading-[1.5] transition-colors',
-                      inRange ? 'bg-violet/18 text-white' : 'text-white/35 hover:bg-white/5',
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        'flex-none tabular-nums',
-                        inRange ? 'text-night-lilac' : 'text-white/30',
-                      )}
-                    >
-                      {line.ts}
-                    </span>
-                    <span>{line.text}</span>
-                  </button>
-                )
-              })}
-            </div>
+            <TranscriptPanel
+              lines={transcript}
+              win={win}
+              trimIn={state.trimIn}
+              trimOut={state.trimOut}
+              onPick={(a, b) => {
+                pickRange(a, b)
+                seek(a)
+              }}
+            />
           </section>
 
           <section>
@@ -230,17 +300,19 @@ export function EditorScreen() {
               Caption for posting
             </h2>
             <p className="m-0 rounded-[8px] border border-white/14 p-[11px] text-[12.5px] leading-[1.55] text-white/80">
-              {state.captionIdx === 0 ? clip.cap : `Rewritten: ${clip.cap.toLowerCase()}`}
-              <br />
-              <span className="text-night-lilac">
-                #buildinpublic #sidehustle #creatoreconomy
-              </span>
+              {clip.cap}
             </p>
             <div className="mt-2 flex gap-2">
-              <Chip onDark onClick={rewriteCaption} className="h-[30px] px-[11px]">
-                Rewrite
-              </Chip>
-              <Chip onDark onClick={() => say('Caption copied.')} className="h-[30px] px-[11px]">
+              <Chip
+                onDark
+                onClick={() => {
+                  void navigator.clipboard
+                    ?.writeText(clip.cap)
+                    .then(() => say('Caption copied.'))
+                    .catch(() => say('Could not reach the clipboard.'))
+                }}
+                className="h-[30px] px-[11px]"
+              >
                 Copy
               </Chip>
             </div>
@@ -262,10 +334,11 @@ export function EditorScreen() {
           <button
             type="button"
             onClick={togglePlay}
-            aria-label={state.playing ? 'Pause preview' : 'Play preview'}
-            className="flex size-8 flex-none cursor-pointer items-center justify-center rounded-full bg-white text-[11px] text-ink"
+            disabled={!clip.proxyUrl}
+            aria-label={playing ? 'Pause preview' : 'Play preview'}
+            className="flex size-8 flex-none cursor-pointer items-center justify-center rounded-full bg-white text-[11px] text-ink disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {state.playing ? '❚❚' : '▶'}
+            {playing ? '❚❚' : '▶'}
           </button>
           <span className="text-[13px] font-medium tabular-nums text-white">
             {fmt(inSec)} → {fmt(outSec)}
@@ -295,28 +368,48 @@ export function EditorScreen() {
         </div>
 
         <div ref={trackRef} className="relative h-[84px] touch-none">
-          <div className="absolute inset-0 flex gap-px overflow-hidden rounded-[8px] opacity-50">
-            {Array.from({ length: FILMSTRIP_FRAMES }, (_, i) => (
-              <div key={i} className="hatch-night flex-1" />
-            ))}
+          {/*
+            The scrub target sits UNDER the trim handles, so a pointer down on a
+            handle starts a drag instead of jumping the playhead out from under
+            the finger that grabbed it.
+          */}
+          <div
+            className="absolute inset-0 flex cursor-pointer gap-px overflow-hidden rounded-[8px]"
+            onPointerDown={(e) => {
+              const r = e.currentTarget.getBoundingClientRect()
+              seek(Math.max(0, Math.min(100, ((e.clientX - r.left) / r.width) * 100)))
+            }}
+          >
+            {clip.stripUrl ? (
+              <img
+                src={clip.stripUrl}
+                alt=""
+                draggable={false}
+                className="size-full object-cover opacity-60"
+              />
+            ) : (
+              Array.from({ length: FILMSTRIP_FRAMES }, (_, i) => (
+                <div key={i} className="hatch-night flex-1 opacity-50" />
+              ))
+            )}
           </div>
 
-          <div className="absolute right-0 bottom-2 left-0 flex h-8 items-end gap-0.5 px-0.5 opacity-55">
-            {WAVE.map((h, i) => (
+          <div className="pointer-events-none absolute right-0 bottom-2 left-0 flex h-8 items-end gap-0.5 px-0.5 opacity-55">
+            {(clip.peaks ?? WAVE).map((h, i) => (
               <div key={i} className="flex-1 rounded-[1px] bg-muted" style={{ height: `${h}%` }} />
             ))}
           </div>
 
           <div
-            className="absolute top-0 bottom-0 left-0 rounded-l-[8px] bg-[rgba(26,25,23,.72)]"
+            className="pointer-events-none absolute top-0 bottom-0 left-0 rounded-l-[8px] bg-[rgba(26,25,23,.72)]"
             style={{ width: `${state.trimIn}%` }}
           />
           <div
-            className="absolute top-0 right-0 bottom-0 rounded-r-[8px] bg-[rgba(26,25,23,.72)]"
+            className="pointer-events-none absolute top-0 right-0 bottom-0 rounded-r-[8px] bg-[rgba(26,25,23,.72)]"
             style={{ width: `${100 - state.trimOut}%` }}
           />
           <div
-            className="absolute top-0 bottom-0 rounded-[8px] border-2 border-violet"
+            className="pointer-events-none absolute top-0 bottom-0 rounded-[8px] border-2 border-violet"
             style={{ left: `${state.trimIn}%`, right: `${100 - state.trimOut}%` }}
           />
 
@@ -334,7 +427,7 @@ export function EditorScreen() {
           />
 
           <div
-            className="absolute -top-1 -bottom-1 w-0.5 bg-white"
+            className="pointer-events-none absolute -top-1 -bottom-1 w-0.5 bg-white"
             style={{ left: `${playheadLeft}%` }}
           />
         </div>
@@ -344,7 +437,76 @@ export function EditorScreen() {
             <span key={i}>{fmt(win.start + (win.span * i) / (TICKS - 1))}</span>
           ))}
         </div>
+
+        {!clip.proxyUrl && (
+          <p className="m-0 text-[11px] text-white/40">
+            This project was made before previews existed, so there is nothing to
+            scrub. Trimming and saving still work — regenerate it to get a preview.
+          </p>
+        )}
       </div>
+    </div>
+  )
+}
+
+/**
+ * The transcript list.
+ *
+ * Split out because it has three states of its own -- loading, empty and
+ * loaded -- and inlining them made the editor's markup hard to follow.
+ */
+function TranscriptPanel({
+  lines,
+  win,
+  trimIn,
+  trimOut,
+  onPick,
+}: {
+  lines: TranscriptLine[] | null
+  win: { start: number; span: number }
+  trimIn: number
+  trimOut: number
+  onPick: (a: number, b: number) => void
+}) {
+  if (lines === null) {
+    return <p className="m-0 text-[12px] text-white/35">Loading transcript…</p>
+  }
+
+  if (lines.length === 0) {
+    return (
+      <p className="m-0 text-[12px] text-white/35">
+        No transcript was kept for this video.
+      </p>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      {lines.map((line) => {
+        const a = pctOf(line.start, win)
+        const b = pctOf(line.end, win)
+        // Half a percent of slack, so a line that defines the current trim still
+        // reads as selected after floating-point rounding.
+        const inRange = trimIn <= a + 0.5 && b <= trimOut + 0.5
+        return (
+          <button
+            key={`${line.start}-${line.text}`}
+            type="button"
+            onClick={() => onPick(a, b)}
+            className={cn(
+              'flex cursor-pointer gap-2.5 rounded-[7px] px-[9px] py-[7px] text-left text-[12.5px] leading-[1.5] transition-colors',
+              inRange ? 'bg-violet/18 text-white' : 'text-white/35 hover:bg-white/5',
+            )}
+          >
+            <span
+              className={cn('flex-none tabular-nums', inRange ? 'text-night-lilac' : 'text-white/30')}
+            >
+              {fmt(line.start)}
+            </span>
+            <span>{line.text}</span>
+          </button>
+        )
+      })}
     </div>
   )
 }
