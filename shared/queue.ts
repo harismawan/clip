@@ -11,6 +11,13 @@ import PgBoss from 'pg-boss'
 
 export const PROCESS_QUEUE = 'process-video'
 export const RECUT_QUEUE = 'recut-clip'
+/**
+ * Build the editor's proxy, filmstrip and peaks for a finished job's clips.
+ *
+ * Separate from the re-cut queue because it renders nothing: a clip that only
+ * wants a preview must not pay for its video to be encoded again.
+ */
+export const BACKFILL_QUEUE = 'backfill-assets'
 
 export interface ProcessJobPayload {
   jobId: string
@@ -19,6 +26,11 @@ export interface ProcessJobPayload {
 export interface RecutJobPayload {
   jobId: string
   clipId: string
+}
+
+/** Per job, never per clip: one source download covers all of its clips. */
+export interface BackfillJobPayload {
+  jobId: string
 }
 
 export function makeBoss(connectionString: string) {

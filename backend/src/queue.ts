@@ -1,5 +1,15 @@
-import { makeBoss, PROCESS_QUEUE, RECUT_QUEUE, sendOptions } from '../../shared/queue.ts'
-import type { ProcessJobPayload, RecutJobPayload } from '../../shared/queue.ts'
+import {
+  makeBoss,
+  PROCESS_QUEUE,
+  RECUT_QUEUE,
+  BACKFILL_QUEUE,
+  sendOptions,
+} from '../../shared/queue.ts'
+import type {
+  ProcessJobPayload,
+  RecutJobPayload,
+  BackfillJobPayload,
+} from '../../shared/queue.ts'
 import { env } from './env.ts'
 
 export const boss = makeBoss(env.DATABASE_URL)
@@ -15,6 +25,7 @@ export async function startQueue() {
   await boss.start()
   await boss.createQueue(PROCESS_QUEUE)
   await boss.createQueue(RECUT_QUEUE)
+  await boss.createQueue(BACKFILL_QUEUE)
   started = true
 }
 
@@ -34,4 +45,13 @@ export async function enqueueRecut(payload: RecutJobPayload) {
   })
 }
 
-export { PROCESS_QUEUE, RECUT_QUEUE }
+export async function enqueueBackfill(payload: BackfillJobPayload) {
+  return boss.send(BACKFILL_QUEUE, payload, {
+    ...sendOptions,
+    // Opening several clips of one project must enqueue one download, not one
+    // per clip -- the handler fills in every clip the job has.
+    singletonKey: payload.jobId,
+  })
+}
+
+export { PROCESS_QUEUE, RECUT_QUEUE, BACKFILL_QUEUE }

@@ -81,22 +81,42 @@ describe('EditorScreen preview', () => {
     expect(markup).toContain('kind=proxy')
   })
 
-  test('falls back to a placeholder, and says why, without one', () => {
+  test('falls back to the rendered clip, and says the picture stops at the cut', () => {
+    // The preview is never empty: every ready clip already has its own finished
+    // MP4 in storage, so there is something to see while the proxy is built.
     const markup = html(clip())
+    expect(markup).toContain('<video')
+    expect(markup).toContain('api/media/c1.mp4')
+    expect(markup).toContain('showing the current cut')
+    expect(markup).toContain('the picture stops at the cut')
+  })
+
+  test('keeps the placeholder only when there is nothing at all to play', () => {
+    const markup = html(clip({ renders: {} }))
     expect(markup).not.toContain('<video')
     expect(markup).toContain('hatch-night-lg')
-    expect(markup).toContain('before previews existed')
+    expect(markup).toContain('no finished render')
   })
 
   test('disables play when there is nothing to play', () => {
-    expect(html(clip())).toContain('aria-label="Play preview"')
-    expect(html(clip())).toContain('disabled=""')
+    const markup = html(clip({ renders: {} }))
+    expect(markup).toContain('aria-label="Play preview"')
+    expect(markup).toContain('disabled=""')
   })
 
   test('shows the real filmstrip when one exists', () => {
     const markup = html(clip({ stripUrl: 'https://api.test/api/media/c1.jpg?kind=strip' }))
     expect(markup).toContain('kind=strip')
     expect(markup).not.toContain('hatch-night ')
+  })
+
+  test('prefers the proxy over the rendered clip once one exists', () => {
+    const markup = html(
+      clip({ proxyUrl: 'https://api.test/api/media/c1.mp4?kind=proxy', win: { start: 2208, span: 150 } }),
+    )
+    expect(markup).toContain('kind=proxy')
+    // The "current cut only" caveat belongs to the fallback, not to the proxy.
+    expect(markup).not.toContain('showing the current cut')
   })
 })
 
