@@ -50,6 +50,13 @@
       "when": 1790008247133,
       "tag": "0006_silent_the_hand",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1790087197275,
+      "tag": "0007_wealthy_ricochet",
+      "breakpoints": true
     }
   ]
 }

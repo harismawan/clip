@@ -76,6 +76,16 @@ export interface Source {
   meta: string
   eta: string
   thumbnailUrl: string | null
+  /**
+   * Full-length editor assets, present only once manual mode has built them.
+   *
+   * Null covers both "never built" and "evicted by retention" -- the editor
+   * treats them identically, because the answer to both is to ask for a build.
+   */
+  proxyUrl?: string | null
+  stripUrl?: string | null
+  /** RMS 0-100, one per second of source. See videos.peaks. */
+  peaks?: number[] | null
 }
 
 /** One rendered output file for a clip, in one aspect ratio. */

@@ -19,7 +19,15 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
  * `proxy` and `strip` are the editor assets and hang off the clip itself, so
  * their ratio is a constant placeholder (see RATIOLESS).
  */
-export type MediaKind = 'video' | 'thumb' | 'proxy' | 'strip'
+/**
+ * `source` and `sourcestrip` are the full-length editor assets. They belong to
+ * the VIDEO, not the clip -- but they are still addressed by a clip id, because
+ * that is what carries ownership. A video is shared between users, so a
+ * video-keyed URL would need a second ownership rule ("do you own any job on
+ * this video") and a second signing path; going through the clip the editor is
+ * already open on leaves the HMAC and the ownership check exactly as they were.
+ */
+export type MediaKind = 'video' | 'thumb' | 'proxy' | 'strip' | 'source' | 'sourcestrip'
 
 /**
  * The `ratio` used for kinds that have none.

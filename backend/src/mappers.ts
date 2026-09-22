@@ -6,7 +6,13 @@ import { fmtDuration, estimateEta, buildMeta } from '../../shared/format.ts'
 import { mediaUrl, RATIOLESS } from '../../shared/mediaToken.ts'
 import { env } from './env.ts'
 
-export function toSourceDTO(v: Video, clipCount = 12): SourceDTO {
+/**
+ * @param signWithClipId a clip of this video the caller owns, used to sign the
+ *   full-length asset URLs. Omitted where there is no clip to sign with (the
+ *   analyse screen, the projects list), and then those fields stay undefined --
+ *   nothing that needs them is on screen there anyway.
+ */
+export function toSourceDTO(v: Video, clipCount = 12, signWithClipId?: string): SourceDTO {
   return {
     videoId: v.id,
     platform: v.platform,
@@ -20,6 +26,16 @@ export function toSourceDTO(v: Video, clipCount = 12): SourceDTO {
     }),
     eta: estimateEta(v.durationSeconds, clipCount),
     thumbnailUrl: v.thumbnailUrl,
+    // Ratio-independent, like the per-clip proxy, so signed with RATIOLESS.
+    proxyUrl:
+      v.proxyKey && signWithClipId
+        ? mediaUrl(env.PUBLIC_API_URL, env.API_TOKEN, signWithClipId, RATIOLESS, 'source')
+        : null,
+    stripUrl:
+      v.stripKey && signWithClipId
+        ? mediaUrl(env.PUBLIC_API_URL, env.API_TOKEN, signWithClipId, RATIOLESS, 'sourcestrip')
+        : null,
+    peaks: v.peaks ?? null,
   }
 }
 
@@ -104,7 +120,7 @@ export async function toJobDTO(
     lengthIdx: job.lengthPreset,
     formats: job.formats as Record<Ratio, boolean>,
     subs: job.burnSubtitles,
-    source: toSourceDTO(video, job.clipCount),
+    source: toSourceDTO(video, job.clipCount, clips[0]?.id),
     clips: toClipDTOs(clips, renders),
     createdAt: job.createdAt.toISOString(),
     completedAt: job.completedAt?.toISOString() ?? null,

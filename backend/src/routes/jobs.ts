@@ -14,7 +14,13 @@ import {
 import { quotaVerdict } from '../quota.ts'
 import { env } from '../env.ts'
 import { toJobDTO, toSourceDTO } from '../mappers.ts'
-import { enqueueProcess, enqueueBackfill, boss, PROCESS_QUEUE } from '../queue.ts'
+import {
+  enqueueProcess,
+  enqueueBackfill,
+  enqueueSourceAssets,
+  boss,
+  PROCESS_QUEUE,
+} from '../queue.ts'
 import { subscribe, ensureListening } from '../events.ts'
 import { isTerminal, RATIOS, TERMINAL_STATUSES } from '../../../shared/types.ts'
 import type { ProjectDTO, QuotaDTO, Ratio } from '../../../shared/types.ts'
@@ -256,6 +262,39 @@ jobsRoutes.post('/:id/assets', async (c) => {
 
   await enqueueBackfill({ jobId: id })
   return c.json({ ok: true, pending: rows.filter((r) => !r.proxyKey).length })
+})
+
+/**
+ * Ensure the FULL-LENGTH editor assets exist for this job's source, so manual
+ * mode can place the timeline window anywhere in the video.
+ *
+ * Also the only place `proxy_used_at` is written on read, which makes it the
+ * whole least-recently-used mechanism: retention orders by that column, so a
+ * source somebody is working on is structurally the last thing evicted.
+ */
+jobsRoutes.post('/:id/source', async (c) => {
+  const id = c.req.param('id')
+  const job = await ownedJob(c.get('user').id, id)
+  if (!job) return c.json({ error: 'Job not found' }, 404)
+
+  // Same rule as every other write path: a job still in flight is about to
+  // rewrite its own clips, and this hands one of them out to be edited.
+  if (!isTerminal(job.status)) {
+    return c.json({ error: 'Wait for the job to finish first.' }, 409)
+  }
+
+  const [video] = await db.select().from(videos).where(eq(videos.id, job.videoId)).limit(1)
+  if (!video) return c.json({ error: 'Source video is missing' }, 404)
+
+  if (video.proxyKey) {
+    await db.update(videos).set({ proxyUsedAt: new Date() }).where(eq(videos.id, video.id))
+    return c.json({ ready: true })
+  }
+
+  // Singleton on the video id, so two users editing the same source -- or one
+  // user with two projects from it -- share a single download and encode.
+  await enqueueSourceAssets({ videoId: video.id, jobId: id })
+  return c.json({ ready: false, pending: true })
 })
 
 /**

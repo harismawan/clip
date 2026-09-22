@@ -139,6 +139,47 @@ export const videos = pgTable(
     maxHeight: integer('max_height'),
     /** Absolute path to the downloaded file. Nulled once scratch is cleaned up. */
     scratchPath: text('scratch_path'),
+
+    /**
+     * Editor assets for the WHOLE source, built only when someone opens manual
+     * mode. Per-video and therefore shared: the second user to edit a popular
+     * URL pays nothing, exactly as they already pay nothing for its transcript.
+     *
+     * All nullable. A null proxyKey means "never built, or evicted" -- the two
+     * are indistinguishable on purpose, because the answer to both is the same:
+     * rebuild it on demand.
+     *
+     * These mirror the per-clip asset columns name for name. The difference is
+     * span: a clip's proxy covers its 150-second window, these cover the lot.
+     */
+    proxyKey: text('proxy_key'),
+    stripKey: text('strip_key'),
+    /**
+     * RMS levels 0-100, ONE PER SECOND of source.
+     *
+     * The same density as the per-clip waveform (150 buckets over a 150-second
+     * window), which is what lets one array serve both timelines: the overview
+     * downsamples in the browser, and the detail band slices the 150 values its
+     * window covers. No second asset, no second encode.
+     */
+    peaks: jsonb('peaks').$type<number[]>(),
+    /** Which backend holds proxyKey and stripKey. See clips.assetStorage. */
+    assetStorage: text('asset_storage').references(() => storageBackends.id),
+    /**
+     * proxy + strip, for the retention budget, which sums this column rather
+     * than listing the bucket.
+     *
+     * `integer` to match clips.proxy_bytes: it overflows past ~2.1GB, which at
+     * ~120MB per hour is a 17-hour source. Matching the column it mirrors is
+     * worth more than guarding a case the platform cannot produce.
+     */
+    proxyBytes: integer('proxy_bytes'),
+    /**
+     * Last time the editor asked for these. THE EVICTION ORDER IS THIS COLUMN --
+     * least recently used, so the source being worked on is structurally the
+     * last thing eligible to be deleted.
+     */
+    proxyUsedAt: timestamp('proxy_used_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('videos_url_idx').on(t.url)],

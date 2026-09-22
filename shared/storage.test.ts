@@ -198,6 +198,37 @@ describe('deleteMany', () => {
     ])
     expect(seen).toEqual(['b'])
   })
+
+  test('names the backends that failed, so a caller can decline to forget them', async () => {
+    /**
+     * Retention nulls the row that holds the keys. If it did that after a
+     * failed delete the object would be unreachable forever -- invisible to
+     * every future sweep, which is the exact leak retention exists to stop.
+     * So the failures come back and the caller decides.
+     */
+    const storage = makeStorage({
+      load: async () => [MINIO, S3],
+      credentials: creds,
+      makeClient: (row) => ({
+        bucket: row.bucket,
+        deleteMany: async () => {
+          if (row.id === 'minio') throw new Error('minio is down')
+        },
+      }),
+    })
+
+    const failed = await storage.deleteMany([
+      { storage: 'minio', key: 'a' },
+      { storage: 's3-jkt', key: 'b' },
+    ])
+    expect(failed).toEqual(['minio'])
+  })
+
+  test('reports nothing when every backend succeeded', async () => {
+    const { storage } = spyStorage([MINIO, S3])
+    const failed = await storage.deleteMany([{ storage: 'minio', key: 'a' }])
+    expect(failed).toEqual([])
+  })
 })
 
 describe('credential env names', () => {

@@ -162,6 +162,52 @@ describe('trim derivation', () => {
   })
 })
 
+describe('EditorScreen manual mode', () => {
+  /** A source long enough that a 150s window has somewhere to move. */
+  const source = {
+    videoId: 'v1',
+    platform: 'youtube',
+    title: 'Long one',
+    length: '1:00:00',
+    durationSeconds: 3600,
+    meta: '',
+    eta: '',
+    thumbnailUrl: null,
+    proxyUrl: 'https://api.test/api/media/c1.mp4?kind=source',
+    stripUrl: 'https://api.test/api/media/c1.jpg?kind=sourcestrip',
+    peaks: Array.from({ length: 3600 }, (_, i) => i % 100),
+  }
+
+  test('offers manual clipping when the source is longer than one window', () => {
+    expect(html(clip(), { source })).toContain('Clip anywhere')
+  })
+
+  test('does not offer it when the whole video already fits in the window', () => {
+    // Nowhere to move the window to, so the button would do nothing.
+    const short = { ...source, durationSeconds: 90 }
+    expect(html(clip(), { source: short })).not.toContain('Clip anywhere')
+  })
+
+  test('a missing manualStart is NOT manual mode', () => {
+    // `!== null` would read an absent field as a placed window and switch the
+    // whole timeline over. Nothing sets it until the user asks.
+    expect(html(clip(), { source })).not.toContain('Whole video')
+  })
+
+  test('placing the window shows the overview and plays the full proxy', () => {
+    const markup = html(clip(), { source, manualStart: 1800 })
+    expect(markup).toContain('Whole video')
+    expect(markup).toContain('kind=source')
+    expect(markup).toContain('Back to this clip')
+  })
+
+  test('the window is reported in source time, not clip time', () => {
+    // Placed half an hour in: the label has to read 30:00, not 00:00.
+    const markup = html(clip(), { source, manualStart: 1800 })
+    expect(markup).toContain('30:00')
+  })
+})
+
 describe('EditorScreen job state', () => {
   test('saving is available on a finished project', () => {
     const markup = html(clip())
