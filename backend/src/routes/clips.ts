@@ -14,6 +14,7 @@ import {
   EDITOR_LEAD_IN,
   EDITOR_SPAN,
   MIN_CLIP_SECONDS,
+  isTerminal,
 } from '../../../shared/types.ts'
 import type { Ratio } from '../../../shared/types.ts'
 import { slugify } from '../../../shared/format.ts'
@@ -161,10 +162,18 @@ clipsRoutes.post('/:id/copy', async (c) => {
 
   const [job] = await db.select().from(jobs).where(eq(jobs.id, source.jobId)).limit(1)
   if (!job) return c.json({ error: 'Job not found' }, 404)
-  // A job mid-render is about to rewrite its own clips; adding one now would
-  // race that. See reconcile.ts for why a finished job can no longer get stuck
-  // on the wrong side of this.
-  if (job.status !== 'completed') {
+  /**
+   * A job mid-render is about to rewrite its own clips; adding one now would
+   * race that. See reconcile.ts for why a finished job can no longer get stuck
+   * on the wrong side of this.
+   *
+   * The test is IN FLIGHT, not 'completed'. A cancelled or failed job is
+   * finished with -- only an explicit regenerate re-enters the pipeline, and
+   * that wipes the clip list whatever the status was. Guarding on 'completed'
+   * meant a project cancelled after its clips had rendered could be opened,
+   * played and trimmed in the editor, and then refused the save.
+   */
+  if (!isTerminal(job.status)) {
     return c.json({ error: 'Wait for the job to finish before editing.' }, 409)
   }
 
@@ -227,7 +236,10 @@ clipsRoutes.post('/:id/redo', async (c) => {
 
   const [job] = await db.select().from(jobs).where(eq(jobs.id, clip.jobId)).limit(1)
   if (!job) return c.json({ error: 'Job not found' }, 404)
-  if (job.status !== 'completed') {
+  // In flight, not 'completed' -- same rule as /copy above. recutClip needs a
+  // clip row, the source video and a transcript; a job that produced clips has
+  // all three no matter how it ended.
+  if (!isTerminal(job.status)) {
     return c.json({ error: 'Wait for the job to finish before re-cutting.' }, 409)
   }
 
