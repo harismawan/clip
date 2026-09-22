@@ -7,6 +7,7 @@ import { db, clips, renders, jobs, videos, transcripts } from '../db/index.ts'
 import { ownedClip, ownedClips, storageUsage } from '../ownership.ts'
 import { storage } from '../s3.ts'
 import { enqueueRecut } from '../queue.ts'
+import { editorGate } from '../editorGate.ts'
 import { toClipDTOs } from '../mappers.ts'
 import { quotaVerdict } from '../quota.ts'
 import {
@@ -70,7 +71,7 @@ clipsRoutes.get('/:id/download', async (c) => {
  * The transcripts table has stored these since Tier A, keyed by video; this is
  * the first route to expose them.
  */
-clipsRoutes.get('/:id/transcript', async (c) => {
+clipsRoutes.get('/:id/transcript', editorGate, async (c) => {
   const id = c.req.param('id')
   const clip = await ownedClip(c.get('user').id, id)
   if (!clip) return c.json({ error: 'Clip not found' }, 404)
@@ -149,7 +150,7 @@ export function trimError(
  * row it is handed, and its "delete the previous renders" step is a no-op for a
  * row that has none yet.
  */
-clipsRoutes.post('/:id/copy', async (c) => {
+clipsRoutes.post('/:id/copy', editorGate, async (c) => {
   const id = c.req.param('id')
   const source = await ownedClip(c.get('user').id, id)
   if (!source) return c.json({ error: 'Clip not found' }, 404)

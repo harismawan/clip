@@ -46,7 +46,12 @@ export default function App() {
           when it turns out wrong.
         */}
         {state.screen === 'login' && <LoginScreen />}
-        {state.screen === 'editor' && <EditorScreen />}
+        {/*
+          Gated as well as unreachable: openEditor refuses to set this screen
+          while the editor is off, but a restored session or a stale state
+          should not be able to mount it either.
+        */}
+        {state.screen === 'editor' && state.user?.editorEnabled && <EditorScreen />}
         {Inside && (
           <AppShell>
             <Inside />

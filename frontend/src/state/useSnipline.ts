@@ -923,6 +923,13 @@ export function useSnipline() {
   const openEditor = useCallback(
     (id: string) =>
       setState((s) => {
+        /**
+         * The editor is off. Nothing should be calling this -- the Edit chip is
+         * not rendered -- but a stale tab or a replayed action must not be able
+         * to navigate to a screen whose API routes answer 404.
+         */
+        if (!s.user?.editorEnabled) return s
+
         const clip = s.clips.find((c) => c.id === id)
         return {
           ...s,

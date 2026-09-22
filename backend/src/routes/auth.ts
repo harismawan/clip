@@ -117,7 +117,20 @@ async function exchangeCode(code: string, verifier: string): Promise<string> {
 /** Mounted behind requireSession: who am I, and end this. */
 export const authSessionRoutes = new Hono()
 
-authSessionRoutes.get('/me', (c) => c.json(c.get('user')))
+/**
+ * The signed-in user, plus the feature flags the UI cannot work out for itself.
+ *
+ * `editorEnabled` rides along here rather than on a /config route of its own
+ * because the app already makes this call once at boot, and the frontend is a
+ * static build with no way to read the server's environment. One variable on
+ * the server therefore drives both the hidden button and the 404 behind it.
+ *
+ * If more flags follow, move them to their own endpoint -- this is one field's
+ * worth of pragmatism, not a pattern.
+ */
+authSessionRoutes.get('/me', (c) =>
+  c.json({ ...c.get('user'), editorEnabled: env.EDITOR_ENABLED }),
+)
 
 authSessionRoutes.post('/logout', async (c) => {
   const token = getCookie(c, SESSION_COOKIE)

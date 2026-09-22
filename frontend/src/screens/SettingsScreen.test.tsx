@@ -18,6 +18,8 @@ const me = (over: Partial<Me> = {}): Me => ({
   email: 'wildan@example.com',
   name: 'Wildan A',
   pictureUrl: 'https://lh3.example/photo.jpg',
+  // Settings has nothing to do with the editor; the flag just has to be set.
+  editorEnabled: false,
   ...over,
 })
 

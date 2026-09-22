@@ -21,6 +21,10 @@ export function ResultsScreen() {
     openPlayer,
   } = useApp()
 
+  // Defaults to false: /me may not have answered yet, and a button that
+  // appears and then disappears is worse than one that never appears.
+  const editorEnabled = state.user?.editorEnabled ?? false
+
   const src = state.source
   const ordered = sortClips(state.clips, state.sortByScore)
   const selected = selectedCount(state.clips)
@@ -208,9 +212,16 @@ export function ResultsScreen() {
                     </p>
                   )}
                   <div className="flex gap-1.5">
-                    <Chip onClick={() => openEditor(clip.id)} className="h-10 flex-1 md:h-[30px]">
-                      Edit
-                    </Chip>
+                    {/*
+                      The only entry point to the editor, and it is server-gated
+                      while that feature is switched off. Redo is `flex-1` too,
+                      so it simply fills the row -- no gap to tidy up.
+                    */}
+                    {editorEnabled && (
+                      <Chip onClick={() => openEditor(clip.id)} className="h-10 flex-1 md:h-[30px]">
+                        Edit
+                      </Chip>
+                    )}
                     <Chip
                       onClick={() => redoClip(clip.id)}
                       disabled={busy}
