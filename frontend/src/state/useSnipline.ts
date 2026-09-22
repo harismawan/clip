@@ -1040,6 +1040,7 @@ export function useSnipline() {
     trackRef,
     say,
     go,
+    refreshJob,
     signIn,
     signOut,
     goNew,
