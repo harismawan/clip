@@ -243,6 +243,16 @@ export const api = {
       method: 'POST',
     }),
 
+  /**
+   * Ensure the FULL-LENGTH source assets exist, so the timeline window can be
+   * placed anywhere in the video.
+   *
+   * Also stamps the server's least-recently-used clock, which is what keeps the
+   * source you are working on from being the one retention evicts.
+   */
+  prepareSource: (jobId: string) =>
+    call<{ ready: boolean; pending?: boolean }>(`/jobs/${jobId}/source`, { method: 'POST' }),
+
   /** Transcript lines covering the clip's editor window, not just the cut. */
   clipTranscript: (clipId: string) =>
     call<{ segments: TranscriptLine[] }>(`/clips/${clipId}/transcript`),

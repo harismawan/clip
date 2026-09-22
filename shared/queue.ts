@@ -18,6 +18,17 @@ export const RECUT_QUEUE = 'recut-clip'
  * wants a preview must not pay for its video to be encoded again.
  */
 export const BACKFILL_QUEUE = 'backfill-assets'
+/**
+ * Build the FULL-LENGTH editor assets for one source video, so manual mode can
+ * scrub outside the 150-second window a clip pins the timeline to.
+ *
+ * Its own queue rather than a flag on the backfill, because the unit of work is
+ * different: a backfill is per job, this is per VIDEO. Videos are deduplicated
+ * by URL and shared between users, so keying the singleton on the video id
+ * collapses two people editing the same source into one download and one
+ * encode. A job-keyed queue would do the work twice.
+ */
+export const SOURCE_QUEUE = 'build-source-assets'
 
 export interface ProcessJobPayload {
   jobId: string
@@ -30,6 +41,17 @@ export interface RecutJobPayload {
 
 /** Per job, never per clip: one source download covers all of its clips. */
 export interface BackfillJobPayload {
+  jobId: string
+}
+
+/**
+ * Per video, because the assets are per video.
+ *
+ * `jobId` rides along only so the download can be attributed in logs -- the
+ * work belongs to the source, not to whichever project happened to ask first.
+ */
+export interface SourceJobPayload {
+  videoId: string
   jobId: string
 }
 

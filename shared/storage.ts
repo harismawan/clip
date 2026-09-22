@@ -171,8 +171,14 @@ export function makeStorage(deps: StorageDeps) {
      * flat version fails silently: keys aimed at the wrong backend delete
      * nothing and still report success, leaving objects orphaned while the
      * database insists they are gone.
+     *
+     * Returns the backends that FAILED, and never throws. One unreachable
+     * backend must not abort deleting an account, so the loop carries on -- but
+     * a caller that is about to forget the keys (retention nulls the row that
+     * holds them) has to be able to decline. An object whose row was cleared
+     * after a failed delete is invisible to every future sweep.
      */
-    async deleteMany(items: StoredObject[]): Promise<void> {
+    async deleteMany(items: StoredObject[]): Promise<string[]> {
       const byBackend = new Map<string, string[]>()
       for (const item of items) {
         const keys = byBackend.get(item.storage)
@@ -180,6 +186,7 @@ export function makeStorage(deps: StorageDeps) {
         else byBackend.set(item.storage, [item.key])
       }
 
+      const failed: string[] = []
       for (const [id, keys] of byBackend) {
         try {
           const client = await this.get(id)
@@ -192,8 +199,10 @@ export function makeStorage(deps: StorageDeps) {
             `[storage] could not delete ${keys.length} object(s) from "${id}": ` +
               `${(e as Error).message}`,
           )
+          failed.push(id)
         }
       }
+      return failed
     },
   }
 }

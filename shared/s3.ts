@@ -95,4 +95,14 @@ export const keys = {
   proxy: (jobId: string, clipId: string) => `jobs/${jobId}/clips/${clipId}/proxy.mp4`,
   /** Filmstrip sprite for that window: N frames tiled into one JPEG. */
   strip: (jobId: string, clipId: string) => `jobs/${jobId}/clips/${clipId}/strip.jpg`,
+
+  /**
+   * Full-length editor assets, keyed by VIDEO rather than by job.
+   *
+   * Videos are deduplicated by URL, so these are shared by every job and every
+   * user built from the same source -- the same reason the transcript above is
+   * keyed this way.
+   */
+  sourceProxy: (videoId: string) => `videos/${videoId}/proxy.mp4`,
+  sourceStrip: (videoId: string) => `videos/${videoId}/strip.jpg`,
 }

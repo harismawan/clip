@@ -20,7 +20,7 @@ import type { Context } from 'hono'
 import { Readable } from 'node:stream'
 import { and, eq } from 'drizzle-orm'
 import { getCookie } from 'hono/cookie'
-import { db, renders, clips } from '../db/index.ts'
+import { db, renders, clips, jobs, videos } from '../db/index.ts'
 import { storage } from '../s3.ts'
 import { env } from '../env.ts'
 import { verifyMedia, type MediaKind } from '../../../shared/mediaToken.ts'
@@ -75,7 +75,7 @@ export function parseRange(
   return { start, end }
 }
 
-const KINDS: MediaKind[] = ['video', 'thumb', 'proxy', 'strip']
+const KINDS: MediaKind[] = ['video', 'thumb', 'proxy', 'strip', 'source', 'sourcestrip']
 
 /** Narrow a query string to a known kind, so an unknown one cannot be signed for. */
 export function parseKind(raw: string | undefined): MediaKind | null {
@@ -102,6 +102,34 @@ export async function locate(
   ratio: string,
   kind: MediaKind,
 ): Promise<Located | null> {
+  /**
+   * The full-length assets, reached clip -> job -> video.
+   *
+   * One join further than everything else here, and the only place that join
+   * matters: ownership is still "do you own this clip", which is what keeps a
+   * shared video from needing a rule of its own.
+   */
+  if (kind === 'source' || kind === 'sourcestrip') {
+    const [row] = await db
+      .select({ video: videos })
+      .from(clips)
+      .innerJoin(jobs, eq(clips.jobId, jobs.id))
+      .innerJoin(videos, eq(jobs.videoId, videos.id))
+      .where(eq(clips.id, clipId))
+      .limit(1)
+
+    const video = row?.video
+    if (!video) return null
+    const key = kind === 'source' ? video.proxyKey : video.stripKey
+    if (!key || !video.assetStorage) return null
+    return {
+      key,
+      backend: video.assetStorage,
+      // Only the proxy is range-served; the strip is one small image.
+      size: kind === 'source' ? (video.proxyBytes ?? 0) : 0,
+    }
+  }
+
   if (kind === 'proxy' || kind === 'strip') {
     const [clip] = await db.select().from(clips).where(eq(clips.id, clipId)).limit(1)
     if (!clip) return null

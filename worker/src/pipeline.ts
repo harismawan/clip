@@ -16,6 +16,8 @@ import { transcribe } from './stages/transcribe.ts'
 import { analyze } from './stages/analyze.ts'
 import { renderClip } from './stages/render.ts'
 import { buildEditorAssets, needingAssets } from './stages/editorAssets.ts'
+import { buildSourceAssets } from './stages/sourceAssets.ts'
+import { sweepSourceProxies } from './retention.ts'
 import { validateRanges, textInRange } from './ranges.ts'
 import { wrapHookLine } from './srt.ts'
 import { ownsScratch } from './scratch.ts'
@@ -194,7 +196,12 @@ export async function processJob(jobId: string): Promise<void> {
  * in which another operation could ever have read this path was the racy one.
  */
 async function ensureDownloaded(
-  jobId: string,
+  /**
+   * Whose progress bar to move, or null when nothing is watching. A source-asset
+   * build belongs to a video rather than to any one project, so it passes null
+   * rather than borrowing a job id it does not act on.
+   */
+  jobId: string | null,
   video: typeof videos.$inferSelect,
   workDir: string,
   /**
@@ -209,7 +216,8 @@ async function ensureDownloaded(
   opts: { quiet?: boolean } = {},
 ): Promise<string> {
   const announce = async (stage: string, fraction: number) => {
-    if (!opts.quiet) await report(jobId, 'downloading', stage, fraction)
+    if (opts.quiet || !jobId) return
+    await report(jobId, 'downloading', stage, fraction)
   }
 
   if (
@@ -229,7 +237,9 @@ async function ensureDownloaded(
   await assertDiskSpace(env.WORK_DIR, info?.estimatedBytes ?? null, env.MIN_FREE_DISK_GB)
 
   if (!opts.quiet) {
+    if (jobId && !opts.quiet) {
     await setStatus(jobId, { status: 'downloading', stage: 'Downloading source', progress: 0 })
+  }
   }
 
   const path = await download(video.url, workDir, (f) => {
@@ -507,4 +517,92 @@ async function fileExists(path: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/**
+ * Build the full-length editor assets for one source video.
+ *
+ * Per video, not per job: `videos` rows are deduplicated by URL, so two users
+ * editing the same source share these -- and share the one download that makes
+ * them. The queue's singleton key is the video id for that reason.
+ *
+ * Best effort, like the backfill. A project whose source has been pulled from
+ * YouTube must not start looking broken because somebody opened manual mode.
+ */
+export async function buildSourceProxy(videoId: string, jobId: string): Promise<void> {
+  const workDir = join(env.WORK_DIR, `source-${videoId}`)
+
+  try {
+    const [video] = await db.select().from(videos).where(eq(videos.id, videoId)).limit(1)
+    if (!video) throw new Error('Source video row is missing')
+
+    // Another build may have won the race while this one sat in the queue.
+    // Touch it so the winner is not evicted for looking idle, and stop.
+    if (video.proxyKey) {
+      await db.update(videos).set({ proxyUsedAt: new Date() }).where(eq(videos.id, videoId))
+      return
+    }
+
+    if (video.durationSeconds <= 0) throw new Error('Source has no duration to scrub')
+
+    const store = await storage.active()
+    await mkdir(workDir, { recursive: true })
+    // Quiet: whichever job asked for this finished long ago, and dragging it
+    // back into 'downloading' would make every write path refuse it.
+    const sourcePath = await ensureDownloaded(null, video, workDir, { quiet: true })
+
+    const built = await buildSourceAssets({
+      sourcePath,
+      workDir,
+      durationSeconds: video.durationSeconds,
+    })
+
+    const proxyKey = keys.sourceProxy(videoId)
+    const stripKey = keys.sourceStrip(videoId)
+    const [proxy, strip] = await Promise.all([
+      readFile(built.proxyPath),
+      readFile(built.stripPath),
+    ])
+
+    await Promise.all([
+      store.s3.upload(proxyKey, proxy, 'video/mp4'),
+      store.s3.upload(stripKey, strip, 'image/jpeg'),
+    ])
+
+    await db
+      .update(videos)
+      .set({
+        proxyKey,
+        stripKey,
+        peaks: built.peaks,
+        assetStorage: store.id,
+        proxyBytes: proxy.byteLength + strip.byteLength,
+        // Stamped on write as well as on read, so a build that nobody opens
+        // still ages from the moment it existed rather than from never.
+        proxyUsedAt: new Date(),
+      })
+      .where(eq(videos.id, videoId))
+
+    console.log(
+      `[pipeline] built source assets for video ${videoId} ` +
+        `(${Math.round((proxy.byteLength + strip.byteLength) / 1024 / 1024)}MB), job ${jobId}`,
+    )
+  } catch (e) {
+    // Nowhere to report this: the job's status belongs to its render, and a
+    // failed preview must not make a finished project look broken.
+    console.error(`[pipeline] source assets for video ${videoId} failed:`, (e as Error).message)
+  } finally {
+    await rm(workDir, { recursive: true, force: true }).catch(() => {})
+    await db.update(videos).set({ scratchPath: null }).where(eq(videos.id, videoId)).catch(() => {})
+  }
+
+  /**
+   * After the build, never before: whatever was just written is the most
+   * recently used thing there is, so it cannot evict itself to make room for
+   * itself. Outside the try/catch because a failed build is exactly when the
+   * disk is most likely to need the sweep.
+   */
+  await sweepSourceProxies().catch((e) => {
+    console.error('[retention] sweep failed:', (e as Error).message)
+  })
 }

@@ -55,6 +55,11 @@ export interface SnipState {
   /** Server-reported stage text, e.g. "Rendering 3 of 12". */
   stage: string | null
   jobStatus: JobStatus | null
+  /**
+   * Where the editor window sits when it has been unpinned from its clip, in
+   * source seconds. Null means pinned -- the normal case.
+   */
+  manualStart: number | null
   jobError: string | null
   /**
    * Which action is in flight, as a key the buttons compare against -- not a
@@ -109,6 +114,7 @@ const initialState: SnipState = {
   jobDone: false,
   stage: null,
   jobStatus: null,
+  manualStart: null,
   jobError: null,
   pending: null,
   quota: null,
@@ -876,10 +882,70 @@ export function useSnipline() {
           ...s,
           screen: 'editor',
           editing: id,
+          // Opening a clip always starts pinned to it. Carrying a window over
+          // from the last clip would put the handles somewhere unrelated.
+          manualStart: null,
           ...(clip ? trimForClip(clip) : DEFAULT_TRIM),
           ratio: firstEnabled(s.formats),
         }
       }),
+    [],
+  )
+
+  /**
+   * Unpin the window and put it here, or re-pin it to the clip with null.
+   *
+   * The trim handles reset to the full window: they were percentages of a
+   * different stretch of video a moment ago, and silently reinterpreting them
+   * against a new window would move the cut without being asked.
+   */
+  const setManualStart = useCallback((startSeconds: number | null) => {
+    setState((s) => {
+      if (startSeconds === null) {
+        const clip = s.clips.find((c) => c.id === s.editing)
+        return { ...s, manualStart: null, ...(clip ? trimForClip(clip) : DEFAULT_TRIM) }
+      }
+      return { ...s, manualStart: startSeconds, trimIn: 0, trimOut: 100 }
+    })
+  }, [])
+
+  /**
+   * Ask the server for the full-length assets and wait for them.
+   *
+   * Same shape as preparePreview: the build is a re-download plus three
+   * encodes, so this polls rather than holding a request open. Returns false
+   * when nothing is coming, which leaves the caller on the pinned window.
+   */
+  const prepareSource = useCallback(
+    async (jobId: string, stopped: () => boolean): Promise<boolean> => {
+      let res
+      try {
+        res = await api.prepareSource(jobId)
+      } catch {
+        // 409 (still running) or 404. Nothing is coming.
+        return false
+      }
+      if (res.ready) {
+        const job = await api.getJob(jobId).catch(() => null)
+        if (job) setState((s) => mergeJob(s, job))
+        return true
+      }
+
+      const deadline = Date.now() + 15 * 60_000
+      while (!stopped() && Date.now() < deadline) {
+        await new Promise((r) => window.setTimeout(r, 10_000))
+        if (stopped()) return false
+
+        const job = await api.getJob(jobId).catch(() => null)
+        if (job?.source.proxyUrl) {
+          setState((s) => mergeJob(s, job))
+          return true
+        }
+      }
+      // The build outlives this poll on a long source. It keeps going on the
+      // server, so reopening manual mode later finds it ready.
+      return false
+    },
     [],
   )
 
@@ -1074,6 +1140,8 @@ export function useSnipline() {
     resetTrim,
     setRatio,
     preparePreview,
+    prepareSource,
+    setManualStart,
     backToResults,
     saveTrim,
     setPwCurrent,

@@ -5,13 +5,14 @@ import { EditorUnavailable } from '../components/EditorUnavailable'
 import { JobIndicator } from '../components/JobIndicator'
 import { TrimHandle } from '../components/TrimHandle'
 import { FEATURES } from '../config'
-import { RATIOS, WAVE } from '../data/fixtures'
+import { RATIOS, TIMELINE_SPAN, WAVE } from '../data/fixtures'
 import { api } from '../lib/api'
 import { cn } from '../lib/cn'
 import { clipTitle, jobIndicator } from '../lib/derive'
 import { fmt } from '../lib/format'
 import { useIsDesktop } from '../lib/media'
 import { useApp } from '../state/AppContext'
+import { manualWindow, overviewPeaks, windowPeaks } from '../lib/manual'
 import { pctOf, previewFor, videoTimeFor, windowFor } from '../state/useSnipline'
 import type { Clip, Ratio, TranscriptLine } from '../types'
 
@@ -49,6 +50,8 @@ export function EditorScreen() {
     resetTrim,
     redoClip,
     preparePreview,
+    prepareSource,
+    setManualStart,
     refreshJob,
     go,
   } = useApp()
@@ -60,15 +63,39 @@ export function EditorScreen() {
   const [transcript, setTranscript] = useState<TranscriptLine[] | null>(null)
   /** True while the server is building this project's missing proxies. */
   const [preparing, setPreparing] = useState(false)
+  /** True while the server is building the full-length source assets. */
+  const [preparingSource, setPreparingSource] = useState(false)
 
   const clip: Clip | undefined = state.clips.find((c) => c.id === state.editing)
 
-  const win = windowFor(clip ?? { s: 0 })
+  /**
+   * Manual mode moves this window; it does not replace the editor. Everything
+   * below -- handles, nudges, transcript clicks, the save -- already works on
+   * an arbitrary 150-second span, and the server already accepts any range in
+   * the video, so unpinning the window is the whole feature.
+   */
+  const source = state.source
+  // Loose on purpose: `!== null` would read a MISSING field as manual mode,
+  // turning it on for any state that simply never set it.
+  const manual = state.manualStart != null
+  const win = manual
+    ? manualWindow(state.manualStart as number, source?.durationSeconds ?? 0)
+    : windowFor(clip ?? { s: 0 })
   const inSec = win.start + (win.span * state.trimIn) / 100
   const outSec = win.start + (win.span * state.trimOut) / 100
   const nudgeStep = (NUDGE_SECONDS / win.span) * 100
 
-  const preview = clip ? previewFor(clip, state.ratio) : null
+  /**
+   * In manual mode the full-length proxy IS the preview, and because it starts
+   * at zero its file time is the source time -- videoTimeFor handles both with
+   * no special case.
+   */
+  const preview =
+    manual && source?.proxyUrl
+      ? { url: source.proxyUrl, start: 0, span: source.durationSeconds, kind: 'proxy' as const }
+      : clip
+        ? previewFor(clip, state.ratio)
+        : null
 
   /** A timeline percentage as an absolute offset into the source. */
   const sourceAt = useCallback((pct: number) => win.start + (pct / 100) * win.span, [win])
@@ -201,6 +228,13 @@ export function EditorScreen() {
     )
   }
 
+  const duration = source?.durationSeconds ?? 0
+  /**
+   * Manual mode needs the full-length proxy, and a source shorter than one
+   * window has nowhere to place it -- the pinned window already shows the lot.
+   */
+  const canGoManual = FEATURES.manualClip && duration > TIMELINE_SPAN
+
   const ratio = state.ratio as Ratio
   const busy = state.pending === 'saveClip'
   const recutting = !!state.regenerating[clip.id]
@@ -221,6 +255,24 @@ export function EditorScreen() {
   const blockedReason = jobReady
     ? null
     : 'This project is still processing. Saving unlocks when it finishes.'
+
+  /**
+   * Build the full-length assets once manual mode is asked for.
+   *
+   * Lazily, and only here: a project nobody edits by hand never pays for the
+   * re-download and the three encodes this costs.
+   */
+  useEffect(() => {
+    if (!manual || source?.proxyUrl || !state.jobId) return
+    let stopped = false
+    setPreparingSource(true)
+    void prepareSource(state.jobId, () => stopped).finally(() => {
+      if (!stopped) setPreparingSource(false)
+    })
+    return () => {
+      stopped = true
+    }
+  }, [manual, source?.proxyUrl, state.jobId, prepareSource])
 
   const playheadLeft = Math.max(state.trimIn, Math.min(state.trimOut, playhead))
 
@@ -268,6 +320,25 @@ export function EditorScreen() {
           >
             {recutting ? 'Recutting…' : 'Regenerate this clip'}
           </Button>
+          {canGoManual && (
+            <Button
+              variant="onDark"
+              disabled={busy || recutting || !jobReady || preparingSource}
+              onClick={() => {
+                if (manual) return setManualStart(null)
+                // Place it where the current window already is, so turning the
+                // mode on does not move the picture out from under the user.
+                setManualStart(win.start)
+              }}
+              className="h-9 px-[15px] text-[12.5px]"
+            >
+              {preparingSource
+                ? 'Preparing…'
+                : manual
+                  ? 'Back to this clip'
+                  : 'Clip anywhere'}
+            </Button>
+          )}
           <Button
             disabled={busy || recutting || !jobReady}
             onClick={() => void saveTrim(clip.id, inSec, outSec, ratio)}
@@ -461,6 +532,54 @@ export function EditorScreen() {
           </Chip>
         </div>
 
+        {manual && (
+          /*
+            The coarse half of the two-level timeline. Four hours across this
+            track is ~13 seconds per pixel, which is why it only PLACES the
+            window -- the trimming still happens below, at 150 seconds wide.
+          */
+          <div className="flex flex-none items-center gap-2.5">
+            <span className="flex-none text-[10.5px] font-semibold tracking-[.07em] text-white/40 uppercase">
+              Whole video
+            </span>
+            <div
+              className="relative h-[34px] flex-1 cursor-pointer touch-none overflow-hidden rounded-[6px] bg-white/5"
+              onPointerDown={(e) => {
+                const r = e.currentTarget.getBoundingClientRect()
+                const frac = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))
+                // Drop the window CENTRED on the click: the pointer marks the
+                // moment wanted, not the start of a run-up to it.
+                setManualStart(frac * duration - win.span / 2)
+              }}
+            >
+              {source?.stripUrl && (
+                <img
+                  src={source.stripUrl}
+                  alt=""
+                  draggable={false}
+                  className="pointer-events-none size-full object-cover opacity-45"
+                />
+              )}
+              <div className="pointer-events-none absolute right-0 bottom-0 left-0 flex h-3.5 items-end gap-px px-px opacity-60">
+                {overviewPeaks(source?.peaks, 240).map((h, i) => (
+                  <div key={i} className="flex-1 rounded-[1px] bg-muted" style={{ height: `${h}%` }} />
+                ))}
+              </div>
+              {/* Where the detail timeline below is looking. */}
+              <div
+                className="pointer-events-none absolute top-0 bottom-0 rounded-[4px] border-2 border-violet bg-violet/20"
+                style={{
+                  left: `${(win.start / duration) * 100}%`,
+                  width: `${Math.max(0.6, (win.span / duration) * 100)}%`,
+                }}
+              />
+            </div>
+            <span className="flex-none text-[11px] tabular-nums text-white/45">
+              {fmt(win.start)} → {fmt(win.start + win.span)}
+            </span>
+          </div>
+        )}
+
         <div ref={trackRef} className="relative h-[84px] touch-none">
           {/*
             The scrub target sits UNDER the trim handles, so a pointer down on a
@@ -474,7 +593,9 @@ export function EditorScreen() {
               seek(Math.max(0, Math.min(100, ((e.clientX - r.left) / r.width) * 100)))
             }}
           >
-            {clip.stripUrl ? (
+            {manual ? (
+              <div className="hatch-night size-full opacity-50" />
+            ) : clip.stripUrl ? (
               <img
                 src={clip.stripUrl}
                 alt=""
@@ -489,7 +610,7 @@ export function EditorScreen() {
           </div>
 
           <div className="pointer-events-none absolute right-0 bottom-2 left-0 flex h-8 items-end gap-0.5 px-0.5 opacity-55">
-            {(clip.peaks ?? WAVE).map((h, i) => (
+            {(manual ? windowPeaks(source?.peaks, win) : (clip.peaks ?? WAVE)).map((h, i) => (
               <div key={i} className="flex-1 rounded-[1px] bg-muted" style={{ height: `${h}%` }} />
             ))}
           </div>

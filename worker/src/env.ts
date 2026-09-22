@@ -27,6 +27,18 @@ const schema = z.object({
   WHISPER_LANGUAGE: z.string().optional(),
   WHISPER_THREADS: z.coerce.number().int().min(1).default(4),
   MIN_FREE_DISK_GB: z.coerce.number().default(5),
+
+  /**
+   * Retention for full-length source proxies. See shared/retention.ts.
+   *
+   * 6GB is sized for THIS box: ~20GB free on a disk shared with several other
+   * applications, and a four-hour 1080p source can be an 8GB scratch download
+   * on its own. At ~120MB per hour of source, 6GB is about 50 hours.
+   */
+  PROXY_BUDGET_GB: z.coerce.number().default(6),
+  PROXY_TTL_DAYS: z.coerce.number().default(30),
+  /** Never evict something opened this recently, even to get under budget. */
+  PROXY_GRACE_MINUTES: z.coerce.number().default(30),
   YTDLP_MAX_AGE_DAYS: z.coerce.number().default(60),
   PREFER_YOUTUBE_SUBTITLES: z
     .string()

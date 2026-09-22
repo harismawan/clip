@@ -6,15 +6,23 @@
  * ~4GB free.
  */
 import { mkdir } from 'node:fs/promises'
-import { makeBoss, PROCESS_QUEUE, RECUT_QUEUE, BACKFILL_QUEUE } from '../../shared/queue.ts'
+import {
+  makeBoss,
+  PROCESS_QUEUE,
+  RECUT_QUEUE,
+  BACKFILL_QUEUE,
+  SOURCE_QUEUE,
+} from '../../shared/queue.ts'
 import type {
   ProcessJobPayload,
   RecutJobPayload,
   BackfillJobPayload,
+  SourceJobPayload,
 } from '../../shared/queue.ts'
 import { env } from './env.ts'
 import { pool, storage, assertStorageReady } from './db.ts'
-import { processJob, recutClip, backfillAssets } from './pipeline.ts'
+import { processJob, recutClip, backfillAssets, buildSourceProxy } from './pipeline.ts'
+import { sweepSourceProxies } from './retention.ts'
 import { reconcileOnBoot } from './reconcile.ts'
 
 const boss = makeBoss(env.DATABASE_URL)
@@ -56,6 +64,13 @@ await boss.start()
 await boss.createQueue(PROCESS_QUEUE)
 await boss.createQueue(RECUT_QUEUE)
 await boss.createQueue(BACKFILL_QUEUE)
+await boss.createQueue(SOURCE_QUEUE)
+
+// Once at startup, so an eviction that was blocked by a busy editor last night
+// is not waiting on somebody opening manual mode again to be retried.
+await sweepSourceProxies().catch((e) => {
+  console.error('[retention] startup sweep failed:', (e as Error).message)
+})
 
 await boss.work<ProcessJobPayload>(
   PROCESS_QUEUE,
@@ -89,6 +104,25 @@ await boss.work<BackfillJobPayload>(
     // Owns its own error handling: a preview that cannot be built must not mark
     // a finished project failed.
     await backfillAssets(job.data.jobId)
+  },
+)
+
+/**
+ * Its own registration, not a branch inside the backfill handler.
+ *
+ * pg-boss gives each `work()` its own poller, so a fifteen-minute source build
+ * for a four-hour podcast drains alongside clip work instead of standing in
+ * front of it. The handlers still run one at a time within a queue, which is
+ * what batchSize 1 is for.
+ */
+await boss.work<SourceJobPayload>(
+  SOURCE_QUEUE,
+  { batchSize: 1, pollingIntervalSeconds: 2 },
+  async ([job]) => {
+    if (!job) return
+    console.log(`[worker] building source assets for video ${job.data.videoId}`)
+    // Owns its own error handling, and runs the retention sweep afterwards.
+    await buildSourceProxy(job.data.videoId, job.data.jobId)
   },
 )
 
