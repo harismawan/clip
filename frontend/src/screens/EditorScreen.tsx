@@ -11,7 +11,7 @@ import { clipTitle } from '../lib/derive'
 import { fmt } from '../lib/format'
 import { useIsDesktop } from '../lib/media'
 import { useApp } from '../state/AppContext'
-import { pctOf, windowFor } from '../state/useSnipline'
+import { pctOf, previewFor, videoTimeFor, windowFor } from '../state/useSnipline'
 import type { Clip, Ratio, TranscriptLine } from '../types'
 
 /** Box sizes for the crop buttons, in the same order as RATIOS. */
@@ -40,6 +40,7 @@ export function EditorScreen() {
     pickRange,
     resetTrim,
     redoClip,
+    preparePreview,
   } = useApp()
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -47,6 +48,8 @@ export function EditorScreen() {
   /** Position on the visible timeline, 0-100. Driven by the video's own clock. */
   const [playhead, setPlayhead] = useState(0)
   const [transcript, setTranscript] = useState<TranscriptLine[] | null>(null)
+  /** True while the server is building this project's missing proxies. */
+  const [preparing, setPreparing] = useState(false)
 
   const clip: Clip | undefined = state.clips.find((c) => c.id === state.editing)
 
@@ -55,21 +58,21 @@ export function EditorScreen() {
   const outSec = win.start + (win.span * state.trimOut) / 100
   const nudgeStep = (NUDGE_SECONDS / win.span) * 100
 
-  /**
-   * Percentage on the timeline to a time on the proxy.
-   *
-   * The proxy begins at the window's start, not at zero, so its clock is offset
-   * from the source by exactly `win.start`.
-   */
-  const toProxyTime = useCallback((pct: number) => (pct / 100) * win.span, [win.span])
+  const preview = clip ? previewFor(clip, state.ratio) : null
+
+  /** A timeline percentage as an absolute offset into the source. */
+  const sourceAt = useCallback((pct: number) => win.start + (pct / 100) * win.span, [win])
 
   const seek = useCallback(
     (pct: number) => {
       setPlayhead(pct)
       const video = videoRef.current
-      if (video) video.currentTime = toProxyTime(pct)
+      // Clamped inside the preview: with the rendered clip as the source there
+      // is no footage outside the cut, so the picture holds at the nearest
+      // frame it has rather than the seek being rejected.
+      if (video && preview) video.currentTime = videoTimeFor(preview, sourceAt(pct))
     },
-    [toProxyTime],
+    [preview, sourceAt],
   )
 
   const togglePlay = useCallback(() => {
@@ -108,6 +111,28 @@ export function EditorScreen() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [backToResults, markTrim, togglePlay])
+
+  /**
+   * A clip with no proxy is playing its own rendered output, which cannot show
+   * anything outside the cut. Ask the server to build the real thing, and swap
+   * to it when it lands. Nothing blocks on this.
+   */
+  useEffect(() => {
+    if (!clip || !state.jobId) return
+    if (clip.proxyUrl) {
+      // A backfill landed while this screen was open; the badge goes with it.
+      setPreparing(false)
+      return
+    }
+    let stopped = false
+    setPreparing(true)
+    void preparePreview(state.jobId, clip.id, () => stopped).finally(() => {
+      if (!stopped) setPreparing(false)
+    })
+    return () => {
+      stopped = true
+    }
+  }, [clip?.id, clip?.proxyUrl, state.jobId, preparePreview])
 
   // The transcript covers the whole window, not just the cut: a line you cannot
   // see is a line you cannot trim to.
@@ -198,16 +223,18 @@ export function EditorScreen() {
           <div
             className={cn(
               'relative flex h-full max-h-[420px] flex-col justify-end overflow-hidden rounded-xl p-[18px]',
-              clip.proxyUrl
-                ? 'bg-black'
-                : 'hatch-night-lg border-2 border-dashed border-violet/55',
+              preview ? 'bg-black' : 'hatch-night-lg border-2 border-dashed border-violet/55',
             )}
             style={{ aspectRatio: ratio.replace(':', '/') }}
           >
-            {clip.proxyUrl && (
+            {preview && (
               <video
                 ref={videoRef}
-                src={clip.proxyUrl}
+                // Keyed on the URL: swapping the rendered clip for the proxy
+                // when a backfill lands has to reload the element, not just
+                // retarget a source it has already buffered.
+                key={preview.url}
+                src={preview.url}
                 poster={clip.renders[ratio]?.thumbUrl ?? undefined}
                 playsInline
                 preload="metadata"
@@ -218,12 +245,12 @@ export function EditorScreen() {
                 onPause={() => setPlaying(false)}
                 onTimeUpdate={(e) => {
                   const video = e.currentTarget
-                  const pct = (video.currentTime / win.span) * 100
+                  const pct = pctOf(preview.start + video.currentTime, win)
                   // Loop the trim rather than the whole window: the point of the
                   // preview is the cut, and running past the out point shows
                   // material the export will not contain.
                   if (pct >= state.trimOut) {
-                    video.currentTime = toProxyTime(state.trimIn)
+                    video.currentTime = videoTimeFor(preview, sourceAt(state.trimIn))
                     setPlayhead(state.trimIn)
                     return
                   }
@@ -235,6 +262,12 @@ export function EditorScreen() {
             {playing && (
               <span className="absolute top-3.5 left-3.5 z-10 rounded-[5px] bg-violet/85 px-[7px] py-[3px] text-[10.5px] font-semibold text-white">
                 playing
+              </span>
+            )}
+
+            {preview?.kind === 'render' && (
+              <span className="absolute top-3.5 right-3.5 z-10 rounded-[5px] bg-black/70 px-[7px] py-[3px] text-[10.5px] font-medium text-white/80">
+                {preparing ? 'building full preview…' : 'showing the current cut'}
               </span>
             )}
 
@@ -334,7 +367,7 @@ export function EditorScreen() {
           <button
             type="button"
             onClick={togglePlay}
-            disabled={!clip.proxyUrl}
+            disabled={!preview}
             aria-label={playing ? 'Pause preview' : 'Play preview'}
             className="flex size-8 flex-none cursor-pointer items-center justify-center rounded-full bg-white text-[11px] text-ink disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -438,10 +471,17 @@ export function EditorScreen() {
           ))}
         </div>
 
-        {!clip.proxyUrl && (
+        {preview?.kind === 'render' && (
           <p className="m-0 text-[11px] text-white/40">
-            This project was made before previews existed, so there is nothing to
-            scrub. Trimming and saving still work — regenerate it to get a preview.
+            {preparing
+              ? 'Building a full preview for this project so you can scrub outside the cut. It downloads the source once, then every clip here gets one.'
+              : 'Showing the finished clip, so the picture stops at the cut. Scrubbing outside it needs a full preview — reopen this clip to try building one again.'}
+          </p>
+        )}
+        {!preview && (
+          <p className="m-0 text-[11px] text-white/40">
+            Nothing to preview yet: this clip has no finished render. Trimming and
+            saving still work.
           </p>
         )}
       </div>

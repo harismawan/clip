@@ -163,6 +163,50 @@ export function pctOf(seconds: number, win: { start: number; span: number }): nu
   return Math.max(0, Math.min(100, ((seconds - win.start) / win.span) * 100))
 }
 
+/**
+ * What the editor can actually play, and which stretch of source it shows.
+ *
+ * The screen asks this rather than "is there a proxy", because a clip cut before
+ * proxies existed still has its own rendered output sitting in storage -- so
+ * there is always a picture, even while the real proxy is still being built.
+ */
+export interface Preview {
+  url: string
+  /** First second of SOURCE this file shows. */
+  start: number
+  /** How many seconds of source it shows. */
+  span: number
+  /** 'proxy' covers the whole timeline; 'render' covers only the cut. */
+  kind: 'proxy' | 'render'
+}
+
+export function previewFor(clip: Clip, ratio: Ratio): Preview | null {
+  if (clip.proxyUrl) {
+    const win = windowFor(clip)
+    return { url: clip.proxyUrl, start: win.start, span: win.span, kind: 'proxy' }
+  }
+
+  // The fallback is the finished clip: it exists for every ready render, so the
+  // preview is never empty. It cannot show anything outside the cut, which is
+  // why it is second choice and why the screen says so.
+  const url = clip.renders[ratio]?.url
+  if (url) {
+    return { url, start: clip.s, span: Math.max(0, clip.e - clip.s), kind: 'render' }
+  }
+  return null
+}
+
+/**
+ * Where to seek within a preview file for a given source offset.
+ *
+ * Clamped to what the file holds: with a render-backed preview the handles can
+ * move outside the cut, and the picture holds at the nearest frame it has
+ * rather than the element rejecting the seek.
+ */
+export function videoTimeFor(preview: Preview, sourceSeconds: number): number {
+  return Math.max(0, Math.min(preview.span, sourceSeconds - preview.start))
+}
+
 /** Where the trim handles open: on the clip's real cut, not a fixed guess. */
 export function trimForClip(clip: { s: number; e: number; win?: { start: number; span: number } | null }) {
   const win = windowFor(clip)
@@ -882,6 +926,47 @@ export function useSnipline() {
 
   const setRatio = useCallback((ratio: Ratio) => patch({ ratio }), [patch])
 
+  /**
+   * Ask the server to build this project's missing editor assets, then wait.
+   *
+   * Resolves true once THIS clip has a proxy. The wait is long by design -- the
+   * backfill downloads the source -- but it is never blocking: the editor is
+   * already playing the rendered clip while this runs, and a false answer just
+   * means it keeps doing so.
+   *
+   * `stopped` lets the caller abandon the poll when the screen closes, rather
+   * than leaving it fetching the job for a quarter of an hour.
+   */
+  const preparePreview = useCallback(
+    async (jobId: string, clipId: string, stopped: () => boolean): Promise<boolean> => {
+      try {
+        await api.prepareAssets(jobId)
+      } catch {
+        // 409 (job not finished) or 404. Nothing is coming; the caller keeps
+        // its fallback. Not worth a toast -- the preview still works.
+        return false
+      }
+
+      const deadline = Date.now() + 15 * 60_000
+      while (!stopped() && Date.now() < deadline) {
+        // Every 10s, not every second: each poll is a full job snapshot with
+        // freshly signed URLs for every render, and the work being waited on is
+        // a download measured in minutes.
+        await new Promise((r) => window.setTimeout(r, 10_000))
+        if (stopped()) return false
+
+        const job = await api.getJob(jobId).catch(() => null)
+        const found = job?.clips.find((c) => c.id === clipId)
+        if (job && found?.proxyUrl) {
+          setState((s) => mergeJob(s, job))
+          return true
+        }
+      }
+      return false
+    },
+    [],
+  )
+
   const backToResults = useCallback(() => patch({ screen: 'results' }), [patch])
 
   /**
@@ -981,6 +1066,7 @@ export function useSnipline() {
     pickRange,
     resetTrim,
     setRatio,
+    preparePreview,
     backToResults,
     saveTrim,
     setPwCurrent,

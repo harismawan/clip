@@ -27,6 +27,17 @@ export const PEAK_BUCKETS = 150
 /** PCM sample rate for the peaks pass. Low, because only envelope shape matters. */
 const PEAK_RATE = 8000
 
+/**
+ * Clips of a job that still have no editor proxy.
+ *
+ * The selection is the part worth protecting: a backfill that re-did clips
+ * which already had assets would pay for a whole project's encodes every time
+ * somebody opened the editor.
+ */
+export function needingAssets<T extends { proxyKey: string | null }>(rows: T[]): T[] {
+  return rows.filter((c) => !c.proxyKey)
+}
+
 export interface EditorWindow {
   start: number
   span: number

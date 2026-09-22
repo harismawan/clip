@@ -15,7 +15,7 @@ import { assertYtdlpFresh, assertDiskSpace, download, probe } from '../../shared
 import { transcribe } from './stages/transcribe.ts'
 import { analyze } from './stages/analyze.ts'
 import { renderClip } from './stages/render.ts'
-import { buildEditorAssets } from './stages/editorAssets.ts'
+import { buildEditorAssets, needingAssets } from './stages/editorAssets.ts'
 import { validateRanges, textInRange } from './ranges.ts'
 import { wrapHookLine } from './srt.ts'
 import { ownsScratch } from './scratch.ts'
@@ -197,13 +197,27 @@ async function ensureDownloaded(
   jobId: string,
   video: typeof videos.$inferSelect,
   workDir: string,
+  /**
+   * Leave the job's public status alone.
+   *
+   * A re-cut and a backfill both run against a job that is already `completed`,
+   * and announcing 'downloading' on one takes it out of that state: the results
+   * screen reads jobStatus 'downloading' and jobDone false, and a second /redo
+   * then 409s because it requires status === 'completed'. The download and its
+   * disk guards are unchanged -- only the announcement is suppressed.
+   */
+  opts: { quiet?: boolean } = {},
 ): Promise<string> {
+  const announce = async (stage: string, fraction: number) => {
+    if (!opts.quiet) await report(jobId, 'downloading', stage, fraction)
+  }
+
   if (
     video.scratchPath &&
     ownsScratch(video.scratchPath, workDir) &&
     (await fileExists(video.scratchPath))
   ) {
-    await report(jobId, 'downloading', 'Using cached download', 1)
+    await announce('Using cached download', 1)
     return video.scratchPath
   }
 
@@ -214,10 +228,12 @@ async function ensureDownloaded(
   const info = await probe(video.url).catch(() => null)
   await assertDiskSpace(env.WORK_DIR, info?.estimatedBytes ?? null, env.MIN_FREE_DISK_GB)
 
-  await setStatus(jobId, { status: 'downloading', stage: 'Downloading source', progress: 0 })
+  if (!opts.quiet) {
+    await setStatus(jobId, { status: 'downloading', stage: 'Downloading source', progress: 0 })
+  }
 
   const path = await download(video.url, workDir, (f) => {
-    void report(jobId, 'downloading', 'Downloading source', f)
+    void announce('Downloading source', f)
   })
 
   await db.update(videos).set({ scratchPath: path }).where(eq(videos.id, video.id))
@@ -355,6 +371,59 @@ async function cleanup(workDir: string, videoId: string): Promise<void> {
 }
 
 /**
+ * Build editor assets for a finished job's clips, without re-rendering them.
+ *
+ * Exists because a clip cut before the editor had a proxy has nothing to play,
+ * and re-cutting one to get a preview would re-encode every ratio of a video
+ * that was already correct.
+ *
+ * Per job, not per clip: the expensive part is the source download, and twelve
+ * clips of one video must not mean twelve downloads of it.
+ */
+export async function backfillAssets(jobId: string): Promise<void> {
+  const workDir = join(env.WORK_DIR, `assets-${jobId}`)
+  // Captured out here so the cleanup in `finally` can null the scratch path it
+  // claimed, on the failure paths as well as the happy one.
+  let videoId = ''
+
+  try {
+    const [job] = await db.select().from(jobs).where(eq(jobs.id, jobId)).limit(1)
+    if (!job) throw new Error('Job no longer exists')
+    videoId = job.videoId
+
+    const [video] = await db.select().from(videos).where(eq(videos.id, job.videoId)).limit(1)
+    if (!video) throw new Error('Source video row is missing')
+
+    const pending = needingAssets(await db.select().from(clips).where(eq(clips.jobId, jobId)))
+    if (pending.length === 0) return
+
+    const store = await storage.active()
+    await mkdir(workDir, { recursive: true })
+    // Quiet: this job finished long ago and must not be dragged back into
+    // 'downloading' just because somebody opened its editor.
+    const sourcePath = await ensureDownloaded(jobId, video, workDir, { quiet: true })
+
+    for (const clip of pending) {
+      await storeEditorAssets(clip, sourcePath, workDir, video.durationSeconds, store)
+    }
+
+    console.log(`[pipeline] backfilled assets for ${pending.length} clip(s) of job ${jobId}`)
+  } catch (e) {
+    // Nowhere to report this: the job's own status belongs to its render, and
+    // failing a preview must not make a finished project look broken. The
+    // editor falls back to the rendered clip and says the preview is limited.
+    console.error(`[pipeline] asset backfill for job ${jobId} failed:`, (e as Error).message)
+  } finally {
+    // Scratch goes on every exit path, as everywhere else in this file: a
+    // multi-GB download left behind is how the box runs out of disk.
+    await rm(workDir, { recursive: true, force: true }).catch(() => {})
+    if (videoId) {
+      await db.update(videos).set({ scratchPath: null }).where(eq(videos.id, videoId)).catch(() => {})
+    }
+  }
+}
+
+/**
  * Re-cut one clip: re-render the existing range from a freshly downloaded
  * source. Reuses the transcript, so this costs a download plus one render
  * rather than a full re-analysis.
@@ -384,7 +453,8 @@ export async function recutClip(jobId: string, clipId: string): Promise<void> {
     const store = await storage.active()
 
     await mkdir(workDir, { recursive: true })
-    const sourcePath = await ensureDownloaded(jobId, video, workDir)
+    // Quiet: this job is already 'completed' and must stay that way.
+    const sourcePath = await ensureDownloaded(jobId, video, workDir, { quiet: true })
 
     // Drop the previous renders, in storage as well as in the database. Each row
     // carries its own backend: an old render may predate the current write

@@ -6,11 +6,15 @@
  * ~4GB free.
  */
 import { mkdir } from 'node:fs/promises'
-import { makeBoss, PROCESS_QUEUE, RECUT_QUEUE } from '../../shared/queue.ts'
-import type { ProcessJobPayload, RecutJobPayload } from '../../shared/queue.ts'
+import { makeBoss, PROCESS_QUEUE, RECUT_QUEUE, BACKFILL_QUEUE } from '../../shared/queue.ts'
+import type {
+  ProcessJobPayload,
+  RecutJobPayload,
+  BackfillJobPayload,
+} from '../../shared/queue.ts'
 import { env } from './env.ts'
 import { pool, storage, assertStorageReady } from './db.ts'
-import { processJob, recutClip } from './pipeline.ts'
+import { processJob, recutClip, backfillAssets } from './pipeline.ts'
 
 const boss = makeBoss(env.DATABASE_URL)
 
@@ -31,6 +35,7 @@ try {
 await boss.start()
 await boss.createQueue(PROCESS_QUEUE)
 await boss.createQueue(RECUT_QUEUE)
+await boss.createQueue(BACKFILL_QUEUE)
 
 await boss.work<ProcessJobPayload>(
   PROCESS_QUEUE,
@@ -52,6 +57,18 @@ await boss.work<RecutJobPayload>(
     if (!job) return
     console.log(`[worker] recutting clip ${job.data.clipId}`)
     await recutClip(job.data.jobId, job.data.clipId)
+  },
+)
+
+await boss.work<BackfillJobPayload>(
+  BACKFILL_QUEUE,
+  { batchSize: 1, pollingIntervalSeconds: 2 },
+  async ([job]) => {
+    if (!job) return
+    console.log(`[worker] backfilling editor assets for job ${job.data.jobId}`)
+    // Owns its own error handling: a preview that cannot be built must not mark
+    // a finished project failed.
+    await backfillAssets(job.data.jobId)
   },
 )
 

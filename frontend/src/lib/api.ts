@@ -232,6 +232,17 @@ export const api = {
 
   redoClip: (clipId: string) => call<{ ok: boolean }>(`/clips/${clipId}/redo`, { method: 'POST' }),
 
+  /**
+   * Ask for the editor's preview assets for a project that has none.
+   *
+   * Idempotent, and cheap to call on every editor open: the server answers 204
+   * when every clip already has them, and the queue collapses duplicates.
+   */
+  prepareAssets: (jobId: string) =>
+    call<{ ok: boolean; pending: number } | undefined>(`/jobs/${jobId}/assets`, {
+      method: 'POST',
+    }),
+
   /** Transcript lines covering the clip's editor window, not just the cut. */
   clipTranscript: (clipId: string) =>
     call<{ segments: TranscriptLine[] }>(`/clips/${clipId}/transcript`),

@@ -14,7 +14,7 @@ import {
 import { quotaVerdict } from '../quota.ts'
 import { env } from '../env.ts'
 import { toJobDTO, toSourceDTO } from '../mappers.ts'
-import { enqueueProcess, boss, PROCESS_QUEUE } from '../queue.ts'
+import { enqueueProcess, enqueueBackfill, boss, PROCESS_QUEUE } from '../queue.ts'
 import { subscribe, ensureListening } from '../events.ts'
 import { isTerminal, RATIOS } from '../../../shared/types.ts'
 import type { ProjectDTO, QuotaDTO, Ratio } from '../../../shared/types.ts'
@@ -225,6 +225,35 @@ jobsRoutes.post('/:id/regenerate', async (c) => {
 
   await enqueueProcess({ jobId: id })
   return c.json({ jobId: id })
+})
+
+/**
+ * Ask for the editor's preview assets for a project that has none.
+ *
+ * Clips cut before the editor had a proxy have nothing to scrub, and re-cutting
+ * one just to get a preview would re-encode a video that was already correct.
+ * This enqueues one download that fills in every clip of the job.
+ *
+ * Idempotent: the queue collapses duplicates by job id, and a project whose
+ * clips all have assets answers 204 without enqueuing anything -- the editor
+ * calls this whenever it opens a clip without a proxy.
+ */
+jobsRoutes.post('/:id/assets', async (c) => {
+  const id = c.req.param('id')
+  const job = await ownedJob(c.get('user').id, id)
+  if (!job) return c.json({ error: 'Job not found' }, 404)
+
+  // The renders have to exist before anything can be added alongside them, and
+  // a running job is about to build these itself.
+  if (job.status !== 'completed') {
+    return c.json({ error: 'Wait for the job to finish first.' }, 409)
+  }
+
+  const rows = await db.select().from(clips).where(eq(clips.jobId, id))
+  if (rows.length === 0 || rows.every((r) => r.proxyKey)) return c.body(null, 204)
+
+  await enqueueBackfill({ jobId: id })
+  return c.json({ ok: true, pending: rows.filter((r) => !r.proxyKey).length })
 })
 
 /**

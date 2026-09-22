@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { peaksFromPcm, windowFor, PEAK_BUCKETS } from './editorAssets.ts'
+import { needingAssets, peaksFromPcm, windowFor, PEAK_BUCKETS } from './editorAssets.ts'
 import { EDITOR_LEAD_IN, EDITOR_SPAN } from '../../../shared/types.ts'
 
 /** Signed 16-bit little-endian mono, the format the peaks pass asks ffmpeg for. */
@@ -75,5 +75,23 @@ describe('peaksFromPcm', () => {
     const positive = peaksFromPcm(pcm(new Array(200).fill(9000)), 4)
     const negative = peaksFromPcm(pcm(new Array(200).fill(-9000)), 4)
     expect(positive).toEqual(negative)
+  })
+})
+
+describe('needingAssets', () => {
+  const clip = (id: string, proxyKey: string | null) => ({ id, proxyKey })
+
+  test('picks only the clips with no proxy', () => {
+    const rows = [clip('a', 'k1'), clip('b', null), clip('c', null), clip('d', 'k2')]
+    expect(needingAssets(rows).map((c) => c.id)).toEqual(['b', 'c'])
+  })
+
+  test('is empty when every clip already has one', () => {
+    // The route answers 204 on this, so no download is ever queued.
+    expect(needingAssets([clip('a', 'k1'), clip('b', 'k2')])).toEqual([])
+  })
+
+  test('is empty for a job with no clips', () => {
+    expect(needingAssets([])).toEqual([])
   })
 })
