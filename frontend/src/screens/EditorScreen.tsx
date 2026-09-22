@@ -22,6 +22,13 @@ const CROP_BOX: Record<Ratio, string> = {
   '4:5': 'w-[52px] h-[65px]',
 }
 
+/**
+ * A job in one of these is finished with: nothing resumes it without an
+ * explicit regenerate. Mirrors TERMINAL_STATUSES in shared/types.ts -- the
+ * frontend deliberately does not import across the workspace.
+ */
+const TERMINAL: string[] = ['completed', 'failed', 'cancelled']
+
 const FILMSTRIP_FRAMES = 16
 const TICKS = 6
 /** Seconds each nudge moves an in/out point. */
@@ -145,8 +152,7 @@ export function EditorScreen() {
    * and the save buttons would stay disabled after the job had actually
    * finished.
    */
-  const jobUnsettled =
-    !!state.jobStatus && !['completed', 'failed', 'cancelled'].includes(state.jobStatus)
+  const jobUnsettled = !!state.jobStatus && !TERMINAL.includes(state.jobStatus)
 
   useEffect(() => {
     if (!jobUnsettled || !state.jobId) return
@@ -200,18 +206,21 @@ export function EditorScreen() {
   const recutting = !!state.regenerating[clip.id]
 
   /**
-   * Every write path on the server refuses a job that is not 'completed'. The
-   * editor used to discover that by firing the request and showing the refusal
-   * as a toast -- which named a job the screen did not display anywhere.
+   * Saving is refused while the job is IN FLIGHT, because the pipeline rewrites
+   * the clip list when it runs and would wipe a copy added underneath it. The
+   * server applies the same rule, so the button and the route agree.
+   *
+   * Not 'completed': a cancelled or failed job is finished with, and the clips
+   * it managed to render are as real as any other. Gating on 'completed' meant
+   * a project cancelled after its clips had rendered opened here, played,
+   * trimmed -- and then refused the save.
+   *
+   * A null status is the job not having loaded yet. Unknown is not finished.
    */
-  const jobReady = state.jobStatus === 'completed'
+  const jobReady = !!state.jobStatus && TERMINAL.includes(state.jobStatus)
   const blockedReason = jobReady
     ? null
-    : state.jobStatus === 'failed'
-      ? 'This project failed, so it cannot be edited. Regenerate it to try again.'
-      : state.jobStatus === 'cancelled'
-        ? 'This project was cancelled, so it cannot be edited.'
-        : 'This project is still processing. Saving unlocks when it finishes.'
+    : 'This project is still processing. Saving unlocks when it finishes.'
 
   const playheadLeft = Math.max(state.trimIn, Math.min(state.trimOut, playhead))
 
@@ -223,7 +232,7 @@ export function EditorScreen() {
         nothing to explain it. Same derivation as the sidebar, so the two can
         never disagree about what is happening.
       */}
-      {!jobReady && (
+      {state.jobStatus !== 'completed' && (
         <JobIndicator
           indicator={jobIndicator(state)}
           variant="banner"

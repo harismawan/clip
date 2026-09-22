@@ -191,9 +191,47 @@ describe('EditorScreen job state', () => {
     expect(running).toContain('disabled=""')
   })
 
-  test('explains a failed project rather than inviting a save that cannot work', () => {
-    const markup = html(clip(), { jobStatus: 'failed', progress: 20 })
+  /**
+   * A job stops being editable because it is ABOUT TO REWRITE ITS OWN CLIPS,
+   * not because it fell short of 'completed'. A cancelled or failed job is
+   * finished with -- nothing resumes it without an explicit regenerate -- so
+   * the clips it did render are as editable as any other.
+   *
+   * This is the bug these tests were changed for: a project cancelled after
+   * its clips had rendered loaded, played and trimmed in the editor, and then
+   * refused the save.
+   */
+  test('a cancelled project can still be edited, because its clips are real', () => {
+    const all = clip({
+      renders: {
+        '9:16': render(),
+        '1:1': render({ ratio: '1:1' }),
+        '4:5': render({ ratio: '4:5' }),
+      },
+    })
+    const markup = html(all, { jobStatus: 'cancelled', progress: 24 })
+    expect(markup).toContain('Save as new clip')
+    expect(markup).not.toContain('disabled=""')
+  })
+
+  test('a failed project can still be edited, and still says it failed', () => {
+    const all = clip({
+      renders: {
+        '9:16': render(),
+        '1:1': render({ ratio: '1:1' }),
+        '4:5': render({ ratio: '4:5' }),
+      },
+    })
+    const markup = html(all, { jobStatus: 'failed', progress: 20 })
+    // Saving works, so the screen must not claim it cannot.
+    expect(markup).not.toContain('disabled=""')
+    expect(markup).not.toContain('cannot be edited')
+    // But the user still needs to know the project did not finish.
     expect(markup).toContain('failed')
-    expect(markup).toContain('Regenerate it to try again')
+  })
+
+  test('an unloaded job stays locked -- unknown is not the same as finished', () => {
+    const markup = html(clip(), { jobStatus: null })
+    expect(markup).toContain('disabled=""')
   })
 })

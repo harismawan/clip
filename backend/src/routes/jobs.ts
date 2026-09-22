@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
-import { eq, and, desc, inArray, isNull } from 'drizzle-orm'
+import { eq, and, desc, exists, inArray, isNull } from 'drizzle-orm'
 import { db, jobs, videos, clips, renders } from '../db/index.ts'
 import {
   ownedJob,
@@ -16,7 +16,7 @@ import { env } from '../env.ts'
 import { toJobDTO, toSourceDTO } from '../mappers.ts'
 import { enqueueProcess, enqueueBackfill, boss, PROCESS_QUEUE } from '../queue.ts'
 import { subscribe, ensureListening } from '../events.ts'
-import { isTerminal, RATIOS } from '../../../shared/types.ts'
+import { isTerminal, RATIOS, TERMINAL_STATUSES } from '../../../shared/types.ts'
 import type { ProjectDTO, QuotaDTO, Ratio } from '../../../shared/types.ts'
 import { storage } from '../s3.ts'
 
@@ -244,8 +244,10 @@ jobsRoutes.post('/:id/assets', async (c) => {
   if (!job) return c.json({ error: 'Job not found' }, 404)
 
   // The renders have to exist before anything can be added alongside them, and
-  // a running job is about to build these itself.
-  if (job.status !== 'completed') {
+  // a running job is about to build these itself. A job that has STOPPED --
+  // however it ended -- is not going to touch them again, so its clips can be
+  // backfilled like any other.
+  if (!isTerminal(job.status)) {
     return c.json({ error: 'Wait for the job to finish first.' }, 409)
   }
 
@@ -279,14 +281,30 @@ jobsRoutes.delete('/:id', async (c) => {
   return c.json({ ok: true })
 })
 
-/** A user's completed, undeleted projects, newest first. */
+/**
+ * A user's reachable, undeleted projects, newest first.
+ *
+ * Reachable means FINISHED WITH and not empty, which is not the same as
+ * 'completed'. A job killed mid-flight after its clips had rendered -- then
+ * marked terminal to free the owner's quota slot -- still holds real clips, and
+ * filtering on 'completed' alone deleted it from the user's view while the
+ * files sat in storage.
+ *
+ * Both halves earn their place: a job still in flight is about to rewrite its
+ * own clip list, and one that produced nothing has nothing to open.
+ */
 export async function listProjects(userId: string): Promise<ProjectDTO[]> {
   const rows = await db
     .select()
     .from(jobs)
     .innerJoin(videos, eq(jobs.videoId, videos.id))
     .where(
-      and(eq(jobs.status, 'completed'), eq(jobs.userId, userId), isNull(jobs.deletedAt)),
+      and(
+        inArray(jobs.status, [...TERMINAL_STATUSES]),
+        exists(db.select({ one: clips.id }).from(clips).where(eq(clips.jobId, jobs.id))),
+        eq(jobs.userId, userId),
+        isNull(jobs.deletedAt),
+      ),
     )
     .orderBy(desc(jobs.completedAt))
     .limit(100)
