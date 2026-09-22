@@ -273,6 +273,17 @@ export const jobs = pgTable(
     /** e.g. {"9:16": true, "1:1": true, "4:5": false} */
     formats: jsonb('formats').$type<Record<string, boolean>>().notNull(),
     burnSubtitles: boolean('burn_subtitles').notNull().default(true),
+    /**
+     * What the user asked the model to look for, in their own words -- e.g.
+     * "only the parts about pricing". Steers WHICH moments get picked; the
+     * length, overlap and duration rules still bind regardless of what it says.
+     *
+     * NULL rather than '' so "no brief" is one value, not two. Lives on the job
+     * rather than the video because two people clipping the same URL want
+     * different things from it -- and because regenerate re-runs this same row,
+     * which is what makes Redo honour the brief without any extra plumbing.
+     */
+    prompt: text('prompt'),
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     startedAt: timestamp('started_at', { withTimezone: true }),

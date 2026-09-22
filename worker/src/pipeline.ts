@@ -95,6 +95,9 @@ export async function processJob(jobId: string): Promise<void> {
       lengthIdx: job.lengthPreset,
       count: job.clipCount,
       title: video.title,
+      // Read off the job row, which is why regenerate honours the brief without
+      // knowing it exists: it re-runs this same row.
+      brief: job.prompt,
     })
 
     // The scoring is the long half of this stage; validation is fast. Moving

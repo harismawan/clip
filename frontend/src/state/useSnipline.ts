@@ -56,6 +56,14 @@ export interface SnipState {
   source: Source | null
   count: number
   lengthIdx: number
+  /**
+   * What the user wants the clips to be about, in their own words.
+   *
+   * Per-video input, NOT a durable preference -- "only the parts about his
+   * first startup failing" is meaningless for the next link -- so it is absent
+   * from savePersisted and cleared by goNew along with the url it described.
+   */
+  prompt: string
   formats: Record<Ratio, boolean>
   subs: boolean
   emailMe: boolean
@@ -116,6 +124,7 @@ const initialState: SnipState = {
   source: null,
   count: 12,
   lengthIdx: 1,
+  prompt: '',
   formats: { '9:16': true, '1:1': true, '4:5': false },
   subs: true,
   emailMe: true,
@@ -618,6 +627,7 @@ export function useSnipline() {
         lengthIdx: state.lengthIdx,
         formats: state.formats,
         subs: state.subs,
+        prompt: state.prompt,
       })
       setState((s) => ({
         ...s,
@@ -725,7 +735,10 @@ export function useSnipline() {
     })
   }, [patch])
 
-  const goNew = useCallback(() => patch({ screen: 'new', url: '', source: null }), [patch])
+  const goNew = useCallback(
+    () => patch({ screen: 'new', url: '', source: null, prompt: '' }),
+    [patch],
+  )
 
   /** Reopen a past project, re-fetching its clips. */
   const openProject = useCallback(
@@ -788,6 +801,7 @@ export function useSnipline() {
 
   const setCount = useCallback((count: number) => patch({ count }), [patch])
   const setLengthIdx = useCallback((lengthIdx: number) => patch({ lengthIdx }), [patch])
+  const setPrompt = useCallback((prompt: string) => patch({ prompt }), [patch])
   const cycleLength = useCallback(
     () => setState((s) => ({ ...s, lengthIdx: (s.lengthIdx + 1) % LENGTHS.length })),
     [],
@@ -1171,6 +1185,7 @@ export function useSnipline() {
     loadSample,
     setCount,
     setLengthIdx,
+    setPrompt,
     cycleLength,
     toggleFormat,
     toggleSubs,

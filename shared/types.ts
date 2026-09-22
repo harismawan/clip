@@ -18,6 +18,19 @@ export const RATIO_DIMS: Record<Ratio, { w: number; h: number }> = {
 }
 
 /**
+ * Longest brief a user may attach to a job.
+ *
+ * Shared, not duplicated per side, because the two uses have to agree: the
+ * textarea stops typing here and the API rejects past here. Were they separate
+ * numbers and the frontend's the larger, the only way to find out would be a
+ * 400 after filling the box.
+ *
+ * 500 fits a sentence or two of "what I'm after". The cap exists because the
+ * text is pasted into an LLM prompt, where unbounded input is unbounded cost.
+ */
+export const MAX_PROMPT_CHARS = 500
+
+/**
  * Clip length windows, indexed by the setup screen's `lengthIdx`.
  * Mirrors the frontend's LENGTHS = ['<30s', '30-60s', '60-90s'].
  */

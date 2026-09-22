@@ -11,10 +11,9 @@
  */
 import { z } from 'zod'
 import { env } from '../env.ts'
-import { LENGTH_PRESETS } from '../../../shared/types.ts'
 import type { TranscriptSegment } from '../../../shared/schema.ts'
 import type { Candidate } from '../ranges.ts'
-import { renderTranscript, extractJson } from '../parse.ts'
+import { buildAnalyzePrompt, extractJson, type PromptOptions } from '../parse.ts'
 
 const responseSchema = z.object({
   clips: z
@@ -57,49 +56,13 @@ const jsonSchema = {
   additionalProperties: false,
 } as const
 
-export interface AnalyzeOptions {
-  segments: TranscriptSegment[]
-  durationSeconds: number
-  lengthIdx: number
-  count: number
-  title: string
+/** Everything buildAnalyzePrompt needs, plus the one field only the call uses. */
+export interface AnalyzeOptions extends PromptOptions {
   signal?: AbortSignal
 }
 
 export async function analyze(opts: AnalyzeOptions): Promise<Candidate[]> {
-  const preset = LENGTH_PRESETS[opts.lengthIdx] ?? LENGTH_PRESETS[1]
-  const transcript = renderTranscript(opts.segments)
-
-  // Ask for extra candidates: validation drops overlaps and out-of-window
-  // ranges, so requesting exactly `count` reliably under-delivers.
-  const ask = Math.min(40, Math.ceil(opts.count * 1.8))
-
-  const prompt = [
-    `You are selecting short vertical clips from a long video for TikTok, Reels and Shorts.`,
-    ``,
-    `Video title: ${opts.title}`,
-    `Total duration: ${opts.durationSeconds.toFixed(0)} seconds.`,
-    ``,
-    `Below is the transcript. Each line is "[start_seconds] text".`,
-    ``,
-    transcript,
-    ``,
-    `Find the ${ask} most compelling standalone moments.`,
-    ``,
-    `Rules:`,
-    `- start and end are SECONDS (decimal numbers), measured from the beginning of the video.`,
-    `- Every clip must be between ${preset.min} and ${preset.max} seconds long.`,
-    `- end must never exceed ${opts.durationSeconds.toFixed(0)}.`,
-    `- Clips must not overlap each other.`,
-    `- Prefer moments that stand alone without setup: a surprising claim, a strong`,
-    `  opinion, a concrete story, a punchline, or an assumption being broken.`,
-    `- Avoid intros, sponsor reads, outros and filler.`,
-    `- score is 0-100 for how well the moment hooks a scrolling viewer.`,
-    `- snippet: a short verbatim excerpt from the transcript in that range.`,
-    `- caption: one sentence to post alongside the clip.`,
-    `- line: the single most quotable phrase from the moment, at most 40 characters.`,
-    `- Write title, caption and line in the same language as the transcript.`,
-  ].join('\n')
+  const prompt = buildAnalyzePrompt(opts)
 
   const res = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
     method: 'POST',

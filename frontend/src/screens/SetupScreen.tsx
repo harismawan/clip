@@ -10,12 +10,14 @@ import {
   LENGTHS,
   RATIOS,
 } from '../data/fixtures'
+import { MAX_PROMPT_CHARS as PROMPT_MAX } from '../../../shared/types'
 import { cn } from '../lib/cn'
 import { clampClipCount, etaForCount, quota } from '../lib/derive'
 import { useApp } from '../state/AppContext'
 
 export function SetupScreen() {
-  const { state, setCount, setLengthIdx, toggleFormat, toggleSubs, startJob, goNew } = useApp()
+  const { state, setCount, setLengthIdx, setPrompt, toggleFormat, toggleSubs, startJob, goNew } =
+    useApp()
   const src = state.source
 
   /**
@@ -224,6 +226,42 @@ export function SetupScreen() {
               </span>
             </span>
           </button>
+
+          {/*
+            Free text sits last, after the chips. The chips are a few taps and
+            most runs never touch this; leading with a blank box would make the
+            quick path look like it needs filling in first.
+          */}
+          <fieldset className="m-0 border-0 p-0">
+            <legend className="mb-[9px] p-0 text-[12.5px] font-medium text-ink">
+              What should the clips be about?{' '}
+              <span className="font-normal text-black/42">optional</span>
+            </legend>
+            <textarea
+              id="clip-prompt"
+              value={state.prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              maxLength={PROMPT_MAX}
+              rows={3}
+              placeholder="e.g. only the parts where he talks about his first startup failing"
+              className="w-full resize-y rounded-[9px] border-[1.5px] border-black/14 bg-white px-3 py-2.5 text-[13px] leading-[1.5] text-ink outline-none placeholder:text-black/30 focus:border-violet"
+            />
+            <div className="mt-1.5 flex items-start justify-between gap-3">
+              <span className="text-[11.5px] text-black/45">
+                Steers which moments get picked. Leave empty to find the strongest
+                hooks anywhere in the video.
+              </span>
+              {/*
+                Only once it is close enough to matter. A counter sitting at
+                0/500 under an empty box reads as a quota to fill.
+              */}
+              {state.prompt.length > PROMPT_MAX * 0.8 && (
+                <span className="shrink-0 text-[11.5px] tabular-nums text-black/42">
+                  {state.prompt.length}/{PROMPT_MAX}
+                </span>
+              )}
+            </div>
+          </fieldset>
 
           <div className="flex flex-wrap items-center gap-3.5">
             <Button

@@ -212,6 +212,8 @@ export const api = {
     lengthIdx: number
     formats: Record<Ratio, boolean>
     subs: boolean
+    /** Free-text brief steering which moments get picked. '' means none. */
+    prompt: string
   }) => call<{ jobId: string }>('/jobs', { method: 'POST', body: JSON.stringify(body) }),
 
   getJob: (id: string) => call<JobSnapshot>(`/jobs/${id}`),
