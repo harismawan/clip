@@ -94,11 +94,8 @@ await ensureListening()
     console.error('[api] job reconcile failed:', e.message)
     return null
   })
-  if (repaired && (repaired.completed || repaired.failed)) {
-    console.log(
-      `[api] reconciled jobs: ${repaired.completed} restored to completed, ` +
-        `${repaired.failed} marked failed`,
-    )
+  if (repaired?.completed) {
+    console.log(`[api] reconciled jobs: ${repaired.completed} restored to completed`)
   }
 }
 // Warn, never exit: the API only reads, so a backend it cannot reach costs

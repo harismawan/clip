@@ -15,6 +15,7 @@ import type {
 import { env } from './env.ts'
 import { pool, storage, assertStorageReady } from './db.ts'
 import { processJob, recutClip, backfillAssets } from './pipeline.ts'
+import { reconcileOnBoot } from './reconcile.ts'
 
 const boss = makeBoss(env.DATABASE_URL)
 
@@ -30,6 +31,25 @@ try {
 } catch (e) {
   console.error(`[worker] ${(e as Error).message}`)
   process.exit(1)
+}
+
+/**
+ * Before claiming anything: this worker is the only thing that runs jobs, and
+ * it is not running one yet -- so any job still claiming to be mid-flight was
+ * abandoned by a previous process. Left alone, each one is a project that can
+ * never be saved or re-cut again.
+ */
+{
+  const repaired = await reconcileOnBoot().catch((e: Error) => {
+    console.error('[worker] job reconcile failed:', e.message)
+    return null
+  })
+  if (repaired && (repaired.completed || repaired.failed)) {
+    console.log(
+      `[worker] reconciled jobs: ${repaired.completed} restored to completed, ` +
+        `${repaired.failed} marked failed`,
+    )
+  }
 }
 
 await boss.start()

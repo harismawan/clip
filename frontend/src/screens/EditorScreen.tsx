@@ -2,12 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '../components/Button'
 import { Chip } from '../components/Chip'
 import { EditorUnavailable } from '../components/EditorUnavailable'
+import { JobIndicator } from '../components/JobIndicator'
 import { TrimHandle } from '../components/TrimHandle'
 import { FEATURES } from '../config'
 import { RATIOS, WAVE } from '../data/fixtures'
 import { api } from '../lib/api'
 import { cn } from '../lib/cn'
-import { clipTitle } from '../lib/derive'
+import { clipTitle, jobIndicator } from '../lib/derive'
 import { fmt } from '../lib/format'
 import { useIsDesktop } from '../lib/media'
 import { useApp } from '../state/AppContext'
@@ -41,6 +42,8 @@ export function EditorScreen() {
     resetTrim,
     redoClip,
     preparePreview,
+    refreshJob,
+    go,
   } = useApp()
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -134,6 +137,23 @@ export function EditorScreen() {
     }
   }, [clip?.id, clip?.proxyUrl, state.jobId, preparePreview])
 
+  /**
+   * Keep the job fresh while it is unsettled.
+   *
+   * Opening a project from the grid fetches the job once and never subscribes,
+   * so without this the banner would freeze at whatever it said on arrival --
+   * and the save buttons would stay disabled after the job had actually
+   * finished.
+   */
+  const jobUnsettled =
+    !!state.jobStatus && !['completed', 'failed', 'cancelled'].includes(state.jobStatus)
+
+  useEffect(() => {
+    if (!jobUnsettled || !state.jobId) return
+    const id = window.setInterval(() => void refreshJob(state.jobId), 5000)
+    return () => window.clearInterval(id)
+  }, [jobUnsettled, state.jobId, refreshJob])
+
   // The transcript covers the whole window, not just the cut: a line you cannot
   // see is a line you cannot trim to.
   useEffect(() => {
@@ -179,10 +199,38 @@ export function EditorScreen() {
   const busy = state.pending === 'saveClip'
   const recutting = !!state.regenerating[clip.id]
 
+  /**
+   * Every write path on the server refuses a job that is not 'completed'. The
+   * editor used to discover that by firing the request and showing the refusal
+   * as a toast -- which named a job the screen did not display anywhere.
+   */
+  const jobReady = state.jobStatus === 'completed'
+  const blockedReason = jobReady
+    ? null
+    : state.jobStatus === 'failed'
+      ? 'This project failed, so it cannot be edited. Regenerate it to try again.'
+      : state.jobStatus === 'cancelled'
+        ? 'This project was cancelled, so it cannot be edited.'
+        : 'This project is still processing. Saving unlocks when it finishes.'
+
   const playheadLeft = Math.max(state.trimIn, Math.min(state.trimOut, playhead))
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-night">
+      {/*
+        The editor renders outside AppShell, which is where JobIndicator
+        normally lives -- so without this the screen refuses to save and shows
+        nothing to explain it. Same derivation as the sidebar, so the two can
+        never disagree about what is happening.
+      */}
+      {!jobReady && (
+        <JobIndicator
+          indicator={jobIndicator(state)}
+          variant="banner"
+          onOpen={() => go('processing')}
+        />
+      )}
+
       <header className="flex h-[54px] flex-none items-center gap-3.5 border-b border-white/10 px-5">
         <button
           type="button"
@@ -199,17 +247,20 @@ export function EditorScreen() {
             {clip.sc} hook
           </span>
         )}
-        <div className="ml-auto flex flex-none gap-2.5">
+        {blockedReason && (
+          <span className="ml-auto flex-none text-[11.5px] text-white/50">{blockedReason}</span>
+        )}
+        <div className={cn('flex flex-none gap-2.5', !blockedReason && 'ml-auto')}>
           <Button
             variant="onDark"
-            disabled={busy || recutting}
+            disabled={busy || recutting || !jobReady}
             onClick={() => void redoClip(clip.id)}
             className="h-9 px-[15px] text-[12.5px]"
           >
             {recutting ? 'Recutting…' : 'Regenerate this clip'}
           </Button>
           <Button
-            disabled={busy || recutting}
+            disabled={busy || recutting || !jobReady}
             onClick={() => void saveTrim(clip.id, inSec, outSec, ratio)}
             className="h-9 px-[18px] text-[12.5px]"
           >

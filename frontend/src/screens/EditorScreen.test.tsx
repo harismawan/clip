@@ -52,6 +52,10 @@ const html = (c: Clip, over: Record<string, unknown> = {}) => {
       ratio: '9:16',
       pending: null,
       regenerating: {},
+      jobId: 'job-1',
+      jobStatus: 'completed',
+      stage: null,
+      progress: 100,
       ...trimForClip(c),
       ...over,
     },
@@ -65,6 +69,9 @@ const html = (c: Clip, over: Record<string, unknown> = {}) => {
     pickRange: () => {},
     resetTrim: () => {},
     redoClip: () => {},
+    preparePreview: async () => false,
+    refreshJob: async () => null,
+    go: () => {},
   } as unknown as Snipline
 
   return renderToStaticMarkup(
@@ -152,5 +159,41 @@ describe('trim derivation', () => {
   test('falls back to the old arithmetic for a clip with no window', () => {
     const c = clip({ s: 2238, e: 2293, win: null })
     expect(windowFor(c)).toEqual({ start: 2208, span: 150 })
+  })
+})
+
+describe('EditorScreen job state', () => {
+  test('saving is available on a finished project', () => {
+    const markup = html(clip())
+    expect(markup).toContain('Save as new clip')
+    expect(markup).not.toContain('still processing')
+  })
+
+  test('shows the progress banner and blocks saving while the job runs', () => {
+    // The refusal used to arrive as a toast naming a job the screen displayed
+    // nowhere, because the editor renders outside the shell that carries the
+    // indicator.
+    // Every ratio rendered, so the only disabled controls can be the header
+    // buttons -- the crop buttons disable themselves for missing renders.
+    const all = clip({
+      renders: {
+        '9:16': render(),
+        '1:1': render({ ratio: '1:1' }),
+        '4:5': render({ ratio: '4:5' }),
+      },
+    })
+    const ready = html(all)
+    expect(ready).not.toContain('disabled=""')
+
+    const running = html(all, { jobStatus: 'rendering', stage: 'Rendering 3 of 12', progress: 62 })
+    expect(running).toContain('still processing')
+    expect(running).toContain('Rendering 3 of 12')
+    expect(running).toContain('disabled=""')
+  })
+
+  test('explains a failed project rather than inviting a save that cannot work', () => {
+    const markup = html(clip(), { jobStatus: 'failed', progress: 20 })
+    expect(markup).toContain('failed')
+    expect(markup).toContain('Regenerate it to try again')
   })
 })
