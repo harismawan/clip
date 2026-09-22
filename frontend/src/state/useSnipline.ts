@@ -2,9 +2,18 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { LENGTHS, RATIOS, SAMPLE_URLS, TIMELINE_LEAD_IN, TIMELINE_SPAN } from '../data/fixtures'
 import { loadPersisted, savePersisted } from '../lib/persist'
+import { anyProjectRunning } from '../lib/derive'
 import { api, auth, ApiError, type Me } from '../lib/api'
 import type { JobSnapshot } from '../lib/api'
 import type { Clip, JobStatus, Project, QuotaDTO, Ratio, Screen, Source, SourceKey } from '../types'
+
+/**
+ * How often the projects list refetches while something is running.
+ *
+ * Fast enough that a bar visibly moves, slow enough that an open tab is ~20
+ * requests a minute rather than a stream.
+ */
+const PROJECTS_POLL_MS = 3000
 
 /** Smallest trim window, as a percentage of the visible timeline. */
 const MIN_TRIM_SPAN = 4
@@ -536,6 +545,43 @@ export function useSnipline() {
     if (!state.user) return
     void loadProjects()
   }, [state.user, loadProjects])
+
+  /**
+   * Refetch on arrival at the projects screen.
+   *
+   * The effect above fires once per session, so starting a job and navigating
+   * to Projects showed a list that predated the job entirely -- the row for the
+   * thing you just started was simply absent.
+   */
+  useEffect(() => {
+    if (!state.user || state.screen !== 'projects') return
+    void loadProjects()
+  }, [state.user, state.screen, loadProjects])
+
+  /**
+   * Tick the rows while work is in flight.
+   *
+   * Polling rather than streaming on purpose. The single SSE subscription
+   * follows ONE job -- whichever this session last touched -- so patching the
+   * list from it would leave a second concurrent job, or anything started on
+   * another device, frozen. That is the complaint, not the fix.
+   *
+   * THE DEPENDENCY IS THE BOOLEAN, NOT THE ARRAY. Depending on state.projects
+   * would rebuild the interval on every fetch: the fetch sets the array, which
+   * restarts the effect, which fetches. Gating on `running` creates the timer
+   * once when work starts and tears it down once when it ends.
+   *
+   * ponytail: fixed interval, no backoff and no pause on a hidden tab --
+   * browsers already throttle background timers, and the visibility handler
+   * below catches up on return. Add backoff if this ever shows up in the API
+   * logs.
+   */
+  const pollProjects = state.screen === 'projects' && anyProjectRunning(state.projects)
+  useEffect(() => {
+    if (!pollProjects) return
+    const id = setInterval(() => void loadProjects(), PROJECTS_POLL_MS)
+    return () => clearInterval(id)
+  }, [pollProjects, loadProjects])
 
   /**
    * Catch up when the tab comes back into view.

@@ -5,6 +5,7 @@ import {
   EXPORT_SIZES,
 } from '../data/fixtures'
 import { fmtBytes } from './format'
+import { isTerminal } from '../../../shared/types'
 import type { Clip, JobStatus, QuotaDTO, Ratio, Screen } from '../types'
 
 /**
@@ -232,4 +233,19 @@ export function etaForCount(durationSeconds: number, clipCount: number): string 
   const h = Math.floor(mins / 60)
   const m = mins % 60
   return m === 0 ? `~${h} hr` : `~${h} hr ${m} min`
+}
+
+/**
+ * Is any project still working?
+ *
+ * The whole of the polling decision, kept pure so it can be tested without
+ * timers or a React tree -- the same split retention.ts and sourceCache.ts use
+ * on the server.
+ *
+ * `isTerminal` rather than a hand-written list: 'failed' and 'cancelled' are
+ * terminal, so a project that failed stops the poll instead of spinning against
+ * the API forever.
+ */
+export function anyProjectRunning(projects: { status: JobStatus }[]): boolean {
+  return projects.some((p) => !isTerminal(p.status))
 }

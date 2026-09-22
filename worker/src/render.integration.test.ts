@@ -68,7 +68,6 @@ beforeAll(async () => {
       platform: 'Test',
       title: 'render integration fixture',
       durationSeconds: 12,
-      scratchPath: source,
     })
     .returning()
   videoId = video.id

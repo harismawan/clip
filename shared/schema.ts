@@ -24,6 +24,7 @@ import {
   timestamp,
   index,
   uniqueIndex,
+  primaryKey,
 } from 'drizzle-orm/pg-core'
 
 export const jobStatus = pgEnum('job_status', [
@@ -137,8 +138,6 @@ export const videos = pgTable(
     publishedAt: text('published_at'),
     /** Best available height, e.g. 1080. Drives the "1080p available" meta text. */
     maxHeight: integer('max_height'),
-    /** Absolute path to the downloaded file. Nulled once scratch is cleaned up. */
-    scratchPath: text('scratch_path'),
 
     /**
      * Editor assets for the WHOLE source, built only when someone opens manual
@@ -183,6 +182,68 @@ export const videos = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('videos_url_idx').on(t.url)],
+)
+
+/**
+ * One worker host's cached copy of an original download.
+ *
+ * The problem this solves: opening the editor downloads the source to build a
+ * proxy, and saving a trim minutes later needs the same file. Those are two
+ * different operations in two different scratch directories, and every
+ * operation deletes its own directory on the way out -- so the second one
+ * re-downloaded several gigabytes it already had.
+ *
+ * Reusing the first download directly is the race this replaces: a re-cut that
+ * adopted a running job's scratch file lost it the moment that job finished and
+ * cleaned up. So the file named here lives OUTSIDE any operation's directory,
+ * in one nobody owns and only the retention sweep deletes.
+ *
+ * KEYED BY (video_id, host_id), NOT BY VIDEO ALONE. `path` is absolute on one
+ * machine's disk, and workers may run on several (docker-compose.worker.yml,
+ * each with its own volume). One row per video would let host B overwrite host
+ * A's path, leaving A's multi-gigabyte file with nothing pointing at it and no
+ * sweep able to find it.
+ */
+export const videoSourceCache = pgTable(
+  'video_source_cache',
+  {
+    videoId: uuid('video_id')
+      .notNull()
+      .references(() => videos.id, { onDelete: 'cascade' }),
+    /** Which worker's disk holds it. See the table comment. */
+    hostId: text('host_id').notNull(),
+    /** Absolute path on that host. Only ever read when host_id matches. */
+    path: text('path').notNull(),
+    /**
+     * Size on disk, from stat() after the download lands.
+     *
+     * `bigint` rather than the `integer` the proxy columns use: this is a
+     * full-resolution original, and a four-hour 1080p source is comfortably
+     * past the 2.1GB an integer can count.
+     */
+    bytes: bigint('bytes', { mode: 'number' }).notNull(),
+    /** Last operation that read or wrote it. The eviction order. */
+    usedAt: timestamp('used_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * How many operations are holding this file open right now.
+     *
+     * THE SWEEP MUST NOT DELETE A ROW WHOSE COUNT IS NOT ZERO: that is a file
+     * some render is reading, and taking it away fails that render on a file it
+     * did not create -- precisely the bug the old scratch-path ownership check
+     * existed to prevent. Incremented and decremented in SQL so two operations
+     * cannot lose an update between them.
+     *
+     * A worker that dies mid-render leaves this above zero forever, which would
+     * make the row immortal. Each host zeroes its OWN rows at startup, which is
+     * safe because a booting worker has claimed no work yet.
+     */
+    refs: integer('refs').notNull().default(0),
+  },
+  (t) => [
+    primaryKey({ columns: [t.videoId, t.hostId] }),
+    // Every sweep reads one host's rows oldest-first.
+    index('video_source_cache_host_used_idx').on(t.hostId, t.usedAt),
+  ],
 )
 
 export const jobs = pgTable(

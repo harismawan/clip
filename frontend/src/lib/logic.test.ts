@@ -3,9 +3,10 @@ import { clampTrim, firstEnabled, mergeJob, needsCatchUp, restored } from '../st
 import type { SnipState } from '../state/useSnipline'
 import type { JobSnapshot } from './api'
 import { ago } from './format'
+import { anyProjectRunning } from './derive'
 import { savePersisted } from './persist'
 import type { Persisted } from './persist'
-import type { Clip, Source } from '../types'
+import type { Clip, JobStatus, Source } from '../types'
 
 const clip = (id: string, idx: number, selected = false): Clip => ({
   id,
@@ -222,4 +223,29 @@ test('needsCatchUp: a finished job is left alone', () => {
 test('needsCatchUp: nothing to refetch without a job', () => {
   expect(needsCatchUp('', 'rendering')).toBe(false)
   expect(needsCatchUp('job-1', null)).toBe(false)
+})
+
+/**
+ * Whether the projects list keeps polling.
+ *
+ * The cases that matter are the terminal ones: a project that failed must stop
+ * the timer, or an open tab hammers /api/projects forever over work that will
+ * never change again.
+ */
+const p = (status: JobStatus) => ({ status })
+
+test('anyProjectRunning: an empty list is not running', () => {
+  expect(anyProjectRunning([])).toBe(false)
+})
+
+test('anyProjectRunning: a finished list is not running', () => {
+  expect(anyProjectRunning([p('completed'), p('completed')])).toBe(false)
+})
+
+test('anyProjectRunning: one running among finished ones counts', () => {
+  expect(anyProjectRunning([p('completed'), p('rendering'), p('completed')])).toBe(true)
+})
+
+test('anyProjectRunning: failed and cancelled are terminal, so polling stops', () => {
+  expect(anyProjectRunning([p('failed'), p('cancelled')])).toBe(false)
 })

@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
-import { eq, and, desc, exists, inArray, isNull } from 'drizzle-orm'
+import { eq, and, desc, exists, inArray, isNull, or, not, sql } from 'drizzle-orm'
 import { db, jobs, videos, clips, renders } from '../db/index.ts'
 import {
   ownedJob,
@@ -333,19 +333,37 @@ jobsRoutes.delete('/:id', async (c) => {
  * own clip list, and one that produced nothing has nothing to open.
  */
 export async function listProjects(userId: string): Promise<ProjectDTO[]> {
+  /**
+   * Freshness, for a list that now mixes finished and running work.
+   *
+   * A running job has no completedAt, so ordering by that column alone dropped
+   * every one of them to the bottom -- underneath projects finished weeks ago.
+   * Coalescing to createdAt puts the job you just started where you expect it,
+   * and it is the same expression the DTO's `createdAt` uses, so the order the
+   * server sorts by is the order the client would compute.
+   */
+  const recency = sql`coalesce(${jobs.completedAt}, ${jobs.createdAt})`
+
   const rows = await db
     .select()
     .from(jobs)
     .innerJoin(videos, eq(jobs.videoId, videos.id))
     .where(
       and(
-        inArray(jobs.status, [...TERMINAL_STATUSES]),
-        exists(db.select({ one: clips.id }).from(clips).where(eq(clips.jobId, jobs.id))),
         eq(jobs.userId, userId),
         isNull(jobs.deletedAt),
+        /**
+         * Finished work needs clips to be worth opening; running work does not
+         * have any yet. Requiring clips of everything is what kept a job in
+         * flight off this screen entirely.
+         */
+        or(
+          not(inArray(jobs.status, [...TERMINAL_STATUSES])),
+          exists(db.select({ one: clips.id }).from(clips).where(eq(clips.jobId, jobs.id))),
+        ),
       ),
     )
-    .orderBy(desc(jobs.completedAt))
+    .orderBy(desc(recency))
     .limit(100)
 
   return rows.map((r) => ({
@@ -354,6 +372,9 @@ export async function listProjects(userId: string): Promise<ProjectDTO[]> {
     source: toSourceDTO(r.videos, r.jobs.clipCount),
     clipCount: r.jobs.clipCount,
     createdAt: (r.jobs.completedAt ?? r.jobs.createdAt).getTime(),
+    status: r.jobs.status,
+    stage: r.jobs.stage,
+    progress: r.jobs.progress,
   }))
 }
 

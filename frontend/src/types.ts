@@ -151,13 +151,30 @@ export interface TranscriptLine {
   text: string
 }
 
-/** A finished job, kept so its clips can be reopened later. */
+/** A job on the projects screen, running or finished. */
 export interface Project {
   id: string
   title: string
   /** Carried inline: a real project cannot be a key into a fixtures object. */
   source: Source
   clipCount: number
-  /** Epoch ms when the job finished. */
+  /** Epoch ms when the job finished, or when it started if it has not. */
   createdAt: number
+
+  /**
+   * Where this project is up to, so the row can show its own progress.
+   *
+   * The list used to be finished-projects-only, and a running job was visible
+   * only through the single global banner -- which shows ONE job, whichever
+   * the session last touched. Start two projects, or come back on another
+   * device, and the work in flight was invisible on the one screen that lists
+   * work.
+   *
+   * Mirrors ProjectDTO in shared/types.ts, which is what /api/projects sends.
+   */
+  status: JobStatus
+  /** Human sub-step, e.g. "Rendering 3 of 12". Null before the first write. */
+  stage: string | null
+  /** 0-100, the same number the banner shows. */
+  progress: number
 }

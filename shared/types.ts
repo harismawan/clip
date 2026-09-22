@@ -47,12 +47,19 @@ export function isTerminal(s: JobStatus): boolean {
 /**
  * Stage progress weights. Chosen to match ProcessingScreen.tsx, whose four
  * steps each own 24% of the bar.
+ *
+ * The boundaries are the step boundaries, and that is the whole point: the
+ * processing screen marks step N done once progress passes N*24, so any other
+ * split makes a step light up as finished while its stage is still running.
+ * Analyzing used to end at 60 and rendering own 36%, which is exactly that bug
+ * -- "Scoring moments & rendering" went green at 72% with most of the rendering
+ * still to come.
  */
 export const STAGE_WEIGHTS: readonly { status: JobStatus; from: number; to: number }[] = [
   { status: 'downloading', from: 0, to: 24 },
   { status: 'transcribing', from: 24, to: 48 },
-  { status: 'analyzing', from: 48, to: 60 },
-  { status: 'rendering', from: 60, to: 96 },
+  { status: 'analyzing', from: 48, to: 72 },
+  { status: 'rendering', from: 72, to: 96 },
 ] as const
 
 /**
@@ -169,7 +176,7 @@ export interface JobDTO {
   completedAt: string | null
 }
 
-/** A finished job as shown on the projects screen. */
+/** A job as shown on the projects screen. */
 export interface ProjectDTO {
   id: string
   title: string
@@ -177,6 +184,23 @@ export interface ProjectDTO {
   clipCount: number
   /** Epoch ms, matching the prototype's Project.createdAt. */
   createdAt: number
+
+  /**
+   * Where this project is up to, so the row can show its own progress.
+   *
+   * The list used to be finished-projects-only, and a running job was visible
+   * only through the single global banner -- which shows ONE job, whichever the
+   * session last touched. Start two projects, or come back on another device,
+   * and the work in flight was invisible on the one screen that lists work.
+   *
+   * These are the same three columns the SSE stream pushes, so the row and the
+   * banner read from one source and cannot disagree about a job.
+   */
+  status: JobStatus
+  /** Human sub-step, e.g. "Rendering 3 of 12". Null before the first write. */
+  stage: string | null
+  /** 0-100, the same number the banner shows. */
+  progress: number
 }
 
 /**

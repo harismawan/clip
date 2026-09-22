@@ -22,7 +22,8 @@ import type {
 import { env } from './env.ts'
 import { pool, storage, assertStorageReady } from './db.ts'
 import { processJob, recutClip, backfillAssets, buildSourceProxy } from './pipeline.ts'
-import { sweepSourceProxies } from './retention.ts'
+import { sweepSourceProxies, sweepSources } from './retention.ts'
+import { reclaimSourceLeases, sourcesDir } from './sourceCache.ts'
 import { reconcileOnBoot } from './reconcile.ts'
 
 const boss = makeBoss(env.DATABASE_URL)
@@ -30,6 +31,9 @@ const boss = makeBoss(env.DATABASE_URL)
 boss.on('error', (err) => console.error('[boss]', err))
 
 await mkdir(env.WORK_DIR, { recursive: true })
+// The shared cache directory, created up front so reclaim can read it on a
+// first-ever boot rather than swallowing an ENOENT.
+await mkdir(sourcesDir(), { recursive: true })
 
 // Before claiming any work: a worker with nowhere to put its output cannot do
 // its job, and finding that out after a 40-minute transcription is the failure
@@ -66,10 +70,38 @@ await boss.createQueue(RECUT_QUEUE)
 await boss.createQueue(BACKFILL_QUEUE)
 await boss.createQueue(SOURCE_QUEUE)
 
+/**
+ * Take back the source leases this host was holding when it last died.
+ *
+ * Same reasoning as the job reconcile above, applied to files: a booting worker
+ * holds no leases, so a row still claiming otherwise was abandoned by a dead
+ * process. Left alone it is a multi-gigabyte file the sweep will never touch,
+ * at any size, by any rule.
+ *
+ * BEFORE THE SWEEPS, NOT AFTER. A sweep run first would see those rows as in
+ * use and spare exactly the files this recovers.
+ */
+{
+  const reclaimed = await reclaimSourceLeases().catch((e: Error) => {
+    console.error('[sources] lease reclaim failed:', e.message)
+    return null
+  })
+  if (reclaimed && (reclaimed.leases || reclaimed.partials)) {
+    console.log(
+      `[sources] reclaimed ${reclaimed.leases} leaked lease(s) and cleared ` +
+        `${reclaimed.partials} interrupted download(s) -- last exit was unclean`,
+    )
+  }
+}
+
 // Once at startup, so an eviction that was blocked by a busy editor last night
 // is not waiting on somebody opening manual mode again to be retried.
 await sweepSourceProxies().catch((e) => {
   console.error('[retention] startup sweep failed:', (e as Error).message)
+})
+
+await sweepSources().catch((e) => {
+  console.error('[sources] startup sweep failed:', (e as Error).message)
 })
 
 await boss.work<ProcessJobPayload>(

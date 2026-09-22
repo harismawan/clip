@@ -1,7 +1,57 @@
 import { useState } from 'react'
 import { Button } from '../components/Button'
+import { Meter } from '../components/Meter'
 import { ago } from '../lib/format'
+import { jobIndicator } from '../lib/derive'
+import { isTerminal } from '../../../shared/types'
+import type { Project } from '../types'
 import { useApp } from '../state/AppContext'
+
+/**
+ * What this project is doing right now, on its own row.
+ *
+ * Reuses jobIndicator rather than re-deriving a label, so a row and the global
+ * banner describe the same job with the same words. Finished work renders
+ * nothing: a bar pinned at 100% under every old project is noise, and the row's
+ * clip count already says it worked.
+ *
+ * Failed work does render, because the alternative is a project that looks
+ * ordinary until you open it.
+ */
+function ProjectProgress({ project }: { project: Project }) {
+  const running = !isTerminal(project.status)
+  if (!running && project.status !== 'failed') return null
+
+  const indicator = jobIndicator({
+    jobId: project.id,
+    jobStatus: project.status,
+    stage: project.stage,
+    progress: project.progress,
+  })
+  if (!indicator.visible) return null
+
+  return (
+    <div className="mt-2">
+      {running && (
+        <Meter value={`${indicator.percent}%`} tone="violet" className="mb-1 h-[3px]" />
+      )}
+      <div
+        className={
+          running
+            ? 'flex items-center gap-1.5 truncate text-[11.5px] text-violet-deep'
+            : 'truncate text-[11.5px] font-medium text-red-600'
+        }
+      >
+        {/*
+          The step, then the number. Reading "Rendering 3 of 12" tells you more
+          about the wait than "48%" does, so it comes first.
+        */}
+        <span className="truncate">{indicator.label}</span>
+        {running && <span className="flex-none tabular-nums">{indicator.percent}%</span>}
+      </div>
+    </div>
+  )
+}
 
 /**
  * Delete, behind a confirm.
@@ -112,15 +162,23 @@ export function ProjectsScreen() {
                   {project.source.platform} · {project.clipCount} clips ·{' '}
                   {ago(project.createdAt)}
                 </div>
+                <ProjectProgress project={project} />
               </div>
               {/*
                 Keyed per row: opening a project re-fetches its clips, and only
                 the row that was clicked should look busy.
               */}
+              {/*
+                A job still in flight has nothing to open -- its clips do not
+                exist yet -- so the button is disabled rather than opening an
+                empty results screen.
+              */}
               <button
                 type="button"
                 onClick={() => openProject(project.id)}
-                disabled={state.pending === `openProject:${project.id}`}
+                disabled={
+                  state.pending === `openProject:${project.id}` || !isTerminal(project.status)
+                }
                 aria-busy={state.pending === `openProject:${project.id}` || undefined}
                 className="flex h-10 flex-none cursor-pointer items-center text-[12.5px] font-medium text-violet hover:text-violet-deep disabled:cursor-not-allowed disabled:text-black/35 md:h-auto"
               >

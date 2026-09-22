@@ -13,7 +13,7 @@
     "dev:worker": "bun --cwd=worker run dev",
     "dev:web": "bun --cwd=frontend run dev",
     "test": "bun test backend worker shared frontend",
-    "typecheck": "bun x tsc -p backend/tsconfig.json --noEmit && bun x tsc -p worker/tsconfig.json --noEmit",
+    "typecheck": "bun x tsc -p backend/tsconfig.json --noEmit && bun x tsc -p worker/tsconfig.json --noEmit && bun x tsc -p frontend/tsconfig.app.json --noEmit",
     "queue": "./scripts/queue-watch.sh"
   },
   "devDependencies": {
