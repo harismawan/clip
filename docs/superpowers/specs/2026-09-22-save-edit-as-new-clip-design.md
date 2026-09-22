@@ -99,8 +99,14 @@ grid behind it, which is where you would go looking for it.
   completed, a stale orphan becomes failed, a genuinely running job and every
   already-terminal row are left alone.
 - `backend` — `trimError` still gates the copy route (already covered).
-- `frontend` — `saveTrim` targets the returned clip id rather than the one being
-  edited, so the poll and the download follow the copy.
+- `backend` — `nextIdxFor` appends after the highest existing idx rather than
+  counting rows, so a project with a deleted clip cannot hand the copy an idx a
+  survivor already owns (idx names the file inside a download zip).
+
+Not covered by a test: that `saveTrim` follows the returned copy id rather than
+the edited one. Exercising it needs a React hook renderer, and the project has
+none — its frontend tests render to static markup. It is enforced by the types
+(`copyClip` answers the new clip) and by review.
 
 ## 5. Out of scope
 

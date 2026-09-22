@@ -970,43 +970,49 @@ export function useSnipline() {
   const backToResults = useCallback(() => patch({ screen: 'results' }), [patch])
 
   /**
-   * Save an edited trim and download the result.
+   * Save the edited range as a NEW clip, then download it.
    *
-   * Two calls, because they mean different things: PATCH writes the range, and
-   * /redo re-renders whatever range the row holds. The wait is real -- a re-cut
-   * re-downloads the source with yt-dlp -- so this stays on the editor screen
-   * with the button busy rather than pretending to be instant.
+   * The clip being edited is left exactly as it was: trimming away from a cut
+   * should not destroy the cut. The server answers the copy it created, already
+   * queued, so everything after this follows the NEW id -- polling the edited
+   * one would watch a clip that is never going to change.
+   *
+   * The wait is real, because rendering the copy re-downloads the source with
+   * yt-dlp, so this stays on the editor screen with the button busy rather than
+   * pretending to be instant.
    */
   const saveTrim = useCallback(
     async (clipId: string, startSeconds: number, endSeconds: number, ratio: Ratio) => {
       patch({ pending: 'saveClip' })
+
+      let copyId: string
       try {
-        await api.patchClip(clipId, startSeconds, endSeconds)
-        await api.redoClip(clipId)
+        const copy = await api.copyClip(clipId, startSeconds, endSeconds)
+        copyId = copy.id
       } catch (e) {
         fail(e)
         return
       }
 
-      say('Saved. Re-rendering this clip…')
-      const clip = await pollClip(clipId)
+      say('Saved as a new clip. Rendering it…')
+      const clip = await pollClip(copyId)
       patch({ pending: null })
 
       if (!clip) {
-        say('That re-cut is taking unusually long; check back from the grid.')
+        say('That render is taking unusually long; check back from the grid.')
         return
       }
       if (clip.status !== 'ready') {
-        say('That re-cut failed.')
+        say('Rendering the new clip failed.')
         return
       }
 
       const url = clip.renders[ratio]?.url
       if (!url) {
-        say(`Re-cut saved, but ${ratio} is not ready.`)
+        say(`New clip saved, but ${ratio} is not ready.`)
         return
       }
-      await api.download([clipId], ratio, url)
+      await api.download([copyId], ratio, url)
     },
     [patch, say, fail, pollClip],
   )

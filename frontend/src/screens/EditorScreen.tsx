@@ -213,7 +213,7 @@ export function EditorScreen() {
             onClick={() => void saveTrim(clip.id, inSec, outSec, ratio)}
             className="h-9 px-[18px] text-[12.5px]"
           >
-            {busy ? 'Saving…' : 'Save & download'}
+            {busy ? 'Saving…' : 'Save as new clip'}
           </Button>
         </div>
       </header>
@@ -352,7 +352,8 @@ export function EditorScreen() {
           </section>
 
           <p className="m-0 mt-auto rounded-[8px] bg-white/5 p-[11px] text-[11.5px] leading-[1.55] text-white/50">
-            Drag the violet handles, or nudge the in/out points below.
+            Saving keeps this clip and adds the trimmed version to the project
+            as a new one.
             <br />
             <span className="text-white/70">space</span> play ·{' '}
             <span className="text-white/70">i</span> /{' '}
