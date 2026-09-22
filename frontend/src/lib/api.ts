@@ -91,6 +91,16 @@ export interface Me {
   email: string
   name: string | null
   pictureUrl: string | null
+  /**
+   * Is the clip editor switched on?
+   *
+   * Server-owned, because the frontend is a static build and cannot read the
+   * server's environment. Read it as `state.user?.editorEnabled ?? false` so
+   * the feature stays hidden while /me is still in flight -- an editor that
+   * flashes into view for a moment and then vanishes is worse than one that
+   * never appears.
+   */
+  editorEnabled: boolean
 }
 
 export const auth = {

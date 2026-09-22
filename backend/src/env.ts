@@ -30,6 +30,26 @@ const schema = z.object({
   QUOTA_STORAGE_GB: z.coerce.number().default(5),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
   /**
+   * The clip editor: trimming, the timeline, manual clipping, save-as-new-clip.
+   *
+   * TEMPORARILY OFF while the editor page is being reworked. This is the single
+   * switch for the whole feature -- it hides the only way in (the Edit chip on
+   * the results screen) AND makes the editor-only routes 404, so a bookmark or
+   * a direct API call cannot reach it either.
+   *
+   * DEFAULTS TO FALSE, unlike every other flag here. An unset variable has to
+   * mean "off": the point of this switch is that nobody reaches the feature,
+   * and a default that fails open would be re-enabled by forgetting.
+   *
+   * The frontend is a static build and cannot read this, so it is published on
+   * GET /api/auth/me and the UI reads it from there -- one variable, both
+   * halves, no rebuild to flip it.
+   */
+  EDITOR_ENABLED: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+  /**
    * Publicly reachable origin of this API. Not the same as HOST:PORT when nginx
    * terminates TLS in front; signed media URLs are built against it, so getting
    * it wrong yields links the browser cannot reach.

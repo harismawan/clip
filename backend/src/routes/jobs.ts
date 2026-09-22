@@ -3,6 +3,7 @@ import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
 import { eq, and, desc, exists, inArray, isNull, or, not, sql } from 'drizzle-orm'
 import { db, jobs, videos, clips, renders } from '../db/index.ts'
+import { editorGate } from '../editorGate.ts'
 import {
   ownedJob,
   activeJob,
@@ -244,7 +245,7 @@ jobsRoutes.post('/:id/regenerate', async (c) => {
  * clips all have assets answers 204 without enqueuing anything -- the editor
  * calls this whenever it opens a clip without a proxy.
  */
-jobsRoutes.post('/:id/assets', async (c) => {
+jobsRoutes.post('/:id/assets', editorGate, async (c) => {
   const id = c.req.param('id')
   const job = await ownedJob(c.get('user').id, id)
   if (!job) return c.json({ error: 'Job not found' }, 404)
@@ -272,7 +273,7 @@ jobsRoutes.post('/:id/assets', async (c) => {
  * whole least-recently-used mechanism: retention orders by that column, so a
  * source somebody is working on is structurally the last thing evicted.
  */
-jobsRoutes.post('/:id/source', async (c) => {
+jobsRoutes.post('/:id/source', editorGate, async (c) => {
   const id = c.req.param('id')
   const job = await ownedJob(c.get('user').id, id)
   if (!job) return c.json({ error: 'Job not found' }, 404)

@@ -42,7 +42,7 @@ const clip = (id: string, over: Partial<Clip> = {}): Clip => ({
   ...over,
 })
 
-const html = (clips: Clip[], filter: Ratio = '9:16') => {
+const html = (clips: Clip[], filter: Ratio = '9:16', editorEnabled = false) => {
   const stub = {
     state: {
       clips,
@@ -53,6 +53,7 @@ const html = (clips: Clip[], filter: Ratio = '9:16') => {
       pending: null,
       playingClipId: null,
       source: null,
+      user: { id: 'u1', email: 'a@b.c', name: null, pictureUrl: null, editorEnabled },
     },
     toggleClip: () => {},
     openEditor: () => {},
@@ -105,5 +106,26 @@ describe('ResultsScreen play control', () => {
     // The 1:1 render is not ready, so the 1:1 tab must not offer play.
     expect(html([c], '1:1')).not.toContain('aria-label="Play ')
     expect(html([c], '9:16')).toContain('aria-label="Play ')
+  })
+})
+
+/**
+ * The editor is switched off at the server, and this chip is the only way in.
+ *
+ * Asserted both ways round: a flag that hides the button but never shows it is
+ * indistinguishable from having deleted the feature, and this one is meant to
+ * come back.
+ */
+describe('editor entry point', () => {
+  test('the Edit chip is absent while the editor is disabled', () => {
+    expect(count(html([clip('a')], '9:16', false), '>Edit<')).toBe(0)
+  })
+
+  test('Redo still renders, because it is not part of the editor', () => {
+    expect(count(html([clip('a')], '9:16', false), '>Redo<')).toBe(1)
+  })
+
+  test('the Edit chip comes back when the editor is re-enabled', () => {
+    expect(count(html([clip('a')], '9:16', true), '>Edit<')).toBe(1)
   })
 })
