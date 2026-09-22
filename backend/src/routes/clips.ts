@@ -4,10 +4,11 @@ import { eq, and, desc, inArray } from 'drizzle-orm'
 import { Readable } from 'node:stream'
 import archiver from 'archiver'
 import { db, clips, renders, jobs, videos, transcripts } from '../db/index.ts'
-import { ownedClip, ownedClips } from '../ownership.ts'
+import { ownedClip, ownedClips, storageUsage } from '../ownership.ts'
 import { storage } from '../s3.ts'
 import { enqueueRecut } from '../queue.ts'
 import { toClipDTOs } from '../mappers.ts'
+import { quotaVerdict } from '../quota.ts'
 import {
   RATIOS,
   EDITOR_LEAD_IN,
@@ -98,6 +99,20 @@ clipsRoutes.get('/:id/transcript', async (c) => {
   })
 })
 
+/**
+ * Where a copy lands in the grid: after everything already there.
+ *
+ * Appended rather than inserted, because `idx` drives display order AND the
+ * file name inside a download zip -- renumbering to slot a copy next to its
+ * original would rename clips the user has already downloaded.
+ *
+ * Takes the max rather than the count: deleting a clip leaves a hole, and
+ * counting would hand the copy an idx that a surviving clip already owns.
+ */
+export function nextIdxFor(siblings: { idx: number }[]): number {
+  return siblings.reduce((max, r) => Math.max(max, r.idx), -1) + 1
+}
+
 const trimBody = z.object({
   s: z.number().finite().nonnegative(),
   e: z.number().finite().positive(),
@@ -123,16 +138,20 @@ export function trimError(
 }
 
 /**
- * Save an edited in/out point.
+ * Save an edited range as a NEW clip, leaving the one it came from alone.
  *
- * Deliberately does not enqueue anything. recutClip already re-renders from
- * clips.start_seconds/end_seconds, so the editor's save is this followed by the
- * existing /redo -- which is why the queue payload needs no new fields.
+ * An overwrite was the wrong shape: the cut you trimmed away from is usually
+ * still worth keeping, and destroying it to produce a variant makes the editor
+ * something you have to be careful with.
+ *
+ * `recutClip` needs no changes to render it. It cuts whatever range is on the
+ * row it is handed, and its "delete the previous renders" step is a no-op for a
+ * row that has none yet.
  */
-clipsRoutes.patch('/:id', async (c) => {
+clipsRoutes.post('/:id/copy', async (c) => {
   const id = c.req.param('id')
-  const clip = await ownedClip(c.get('user').id, id)
-  if (!clip) return c.json({ error: 'Clip not found' }, 404)
+  const source = await ownedClip(c.get('user').id, id)
+  if (!source) return c.json({ error: 'Clip not found' }, 404)
 
   const parsed = trimBody.safeParse(await c.req.json().catch(() => ({})))
   if (!parsed.success) {
@@ -140,10 +159,11 @@ clipsRoutes.patch('/:id', async (c) => {
   }
   const { s, e } = parsed.data
 
-  const [job] = await db.select().from(jobs).where(eq(jobs.id, clip.jobId)).limit(1)
+  const [job] = await db.select().from(jobs).where(eq(jobs.id, source.jobId)).limit(1)
   if (!job) return c.json({ error: 'Job not found' }, 404)
-  // Same guard as /redo: editing a range out from under a running render would
-  // produce a file that matches neither the old trim nor the new one.
+  // A job mid-render is about to rewrite its own clips; adding one now would
+  // race that. See reconcile.ts for why a finished job can no longer get stuck
+  // on the wrong side of this.
   if (job.status !== 'completed') {
     return c.json({ error: 'Wait for the job to finish before editing.' }, 409)
   }
@@ -154,14 +174,45 @@ clipsRoutes.patch('/:id', async (c) => {
   const bad = trimError(s, e, video.durationSeconds)
   if (bad) return c.json({ error: bad }, 400)
 
-  const [updated] = await db
-    .update(clips)
-    .set({ startSeconds: s, endSeconds: e })
-    .where(eq(clips.id, id))
+  /**
+   * A copy adds renders, and nothing else bounds how many: the daily quota
+   * counts jobs, and this creates clips inside one that is already paid for.
+   * The storage ceiling is the honest limit to apply.
+   */
+  const user = c.get('user')
+  const refusal = quotaVerdict({
+    activeCount: 0,
+    dailyCount: 0,
+    dailyLimit: Number.POSITIVE_INFINITY,
+    storageBytes: await storageUsage(user.id),
+    storageLimitBytes: user.storageLimitBytes ?? env.QUOTA_STORAGE_GB * 1024 ** 3,
+  })
+  if (refusal) return c.json({ error: refusal.message }, refusal.status)
+
+  const siblings = await db.select().from(clips).where(eq(clips.jobId, source.jobId))
+  const nextIdx = nextIdxFor(siblings)
+
+  const [copy] = await db
+    .insert(clips)
+    .values({
+      jobId: source.jobId,
+      idx: nextIdx,
+      // The same moment, retrimmed. Re-deriving a title or a caption would mean
+      // asking the model again, for a clip the user has already judged.
+      title: source.title,
+      startSeconds: s,
+      endSeconds: e,
+      score: source.score,
+      snippet: source.snippet,
+      caption: source.caption,
+      subtitleLine: source.subtitleLine,
+      status: 'pending',
+    })
     .returning()
 
-  const renderRows = await db.select().from(renders).where(eq(renders.clipId, id))
-  return c.json(toClipDTOs([updated], renderRows)[0])
+  await enqueueRecut({ jobId: source.jobId, clipId: copy.id })
+
+  return c.json(toClipDTOs([copy], [])[0], 201)
 })
 
 /**

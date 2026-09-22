@@ -6,6 +6,7 @@ import { requireSession } from './auth.ts'
 import { lookupSession } from './sessionStore.ts'
 import { authRoutes, authSessionRoutes } from './routes/auth.ts'
 import { startQueue } from './queue.ts'
+import { reconcileJobs } from './reconcile.ts'
 import { ensureListening } from './events.ts'
 import { warnAboutStorage } from './s3.ts'
 import { sources } from './routes/sources.ts'
@@ -80,6 +81,26 @@ app.notFound((c) => c.json({ error: 'Not found' }, 404))
 
 await startQueue()
 await ensureListening()
+
+/**
+ * Repair jobs whose status outlived the work it described, before serving a
+ * single request -- every write path refuses a job that is not 'completed', so
+ * a polluted row is a project nobody can save, edit or re-cut.
+ */
+{
+  const repaired = await reconcileJobs().catch((e: Error) => {
+    // Never fatal: a reconcile that cannot run leaves things exactly as they
+    // were, which is worth less than the API being up.
+    console.error('[api] job reconcile failed:', e.message)
+    return null
+  })
+  if (repaired && (repaired.completed || repaired.failed)) {
+    console.log(
+      `[api] reconciled jobs: ${repaired.completed} restored to completed, ` +
+        `${repaired.failed} marked failed`,
+    )
+  }
+}
 // Warn, never exit: the API only reads, so a backend it cannot reach costs
 // those clips and nothing else. The worker is stricter about the write target.
 await warnAboutStorage()

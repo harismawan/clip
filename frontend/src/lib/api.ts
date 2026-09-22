@@ -248,13 +248,14 @@ export const api = {
     call<{ segments: TranscriptLine[] }>(`/clips/${clipId}/transcript`),
 
   /**
-   * Save an edited in/out point. This only writes the row -- re-rendering is a
-   * separate `redoClip`, because the worker re-cuts from whatever range the row
-   * holds.
+   * Save an edited range as a new clip, leaving the original alone.
+   *
+   * Answers the new clip, already queued for rendering -- so the caller polls
+   * the id it gets back, never the one it edited from.
    */
-  patchClip: (clipId: string, s: number, e: number) =>
-    call<Omit<Clip, 'selected'>>(`/clips/${clipId}`, {
-      method: 'PATCH',
+  copyClip: (clipId: string, s: number, e: number) =>
+    call<Omit<Clip, 'selected'>>(`/clips/${clipId}/copy`, {
+      method: 'POST',
       body: JSON.stringify({ s, e }),
     }),
 
