@@ -26,6 +26,11 @@ const project = (id: string, title: string): Project => ({
   },
   clipCount: 3,
   createdAt: Date.now(),
+  // Finished unless a test says otherwise: these cases are about opening and
+  // deleting, which a running project does not offer.
+  status: 'completed',
+  stage: null,
+  progress: 100,
 })
 
 const html = (projects: Project[], pending: string | null = null) => {

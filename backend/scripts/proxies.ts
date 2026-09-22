@@ -14,7 +14,7 @@
  * actually uses.
  */
 import { desc, isNotNull } from 'drizzle-orm'
-import { videos } from '../../shared/schema.ts'
+import { videos, videoSourceCache } from '../../shared/schema.ts'
 import { evictionPlan } from '../../shared/retention.ts'
 import { fmtBytes } from '../../shared/format.ts'
 
@@ -85,18 +85,60 @@ async function main() {
     )
   }
 
+  await reportSources(db, now)
+
   if (!args.sweep) {
     if (plan.evict.length) console.log('\nRun with --sweep to carry that out.')
     return
   }
 
   // The worker owns the doing, so the rules cannot drift between the two.
-  const { sweepSourceProxies } = await import('../../worker/src/retention.ts')
+  const { sweepSourceProxies, sweepSources } = await import('../../worker/src/retention.ts')
   const result = await sweepSourceProxies()
   console.log(
-    `\nswept: evicted ${result.evicted}, freed ${fmtBytes(result.freedBytes)}` +
+    `\nswept proxies: evicted ${result.evicted}, freed ${fmtBytes(result.freedBytes)}` +
       (result.spared ? ' (something was spared for being in use)' : ''),
   )
+
+  /**
+   * Only this host's cached sources, because sweepSources deletes by absolute
+   * path -- running it here reclaims the machine the CLI is on, which is the
+   * worker box in a single-host deployment and nothing useful otherwise.
+   */
+  const sources = await sweepSources()
+  console.log(
+    `swept sources: evicted ${sources.evicted}, freed ${fmtBytes(sources.freedBytes)}` +
+      (sources.spared ? ' (something was spared for being in use)' : ''),
+  )
+}
+
+/**
+ * Cached originals, across every host.
+ *
+ * Read-only and deliberately not host-filtered: the point of showing it here is
+ * to answer "what is eating the disk", and on a multi-host deployment the
+ * answer may be a machine this CLI is not running on.
+ */
+async function reportSources(db: { select: () => any }, now: Date) {
+  const rows = await db.select().from(videoSourceCache).orderBy(desc(videoSourceCache.usedAt))
+  if (rows.length === 0) return
+
+  const total = rows.reduce((sum: number, r: { bytes: number }) => sum + r.bytes, 0)
+  const budgetBytes = Number(process.env.SOURCE_BUDGET_GB ?? 8) * 1024 ** 3
+  const ttlMinutes = Number(process.env.SOURCE_TTL_MINUTES ?? 60)
+
+  console.log(
+    `\n${rows.length} cached source download(s), ${fmtBytes(total)} of ` +
+      `${fmtBytes(budgetBytes)} per host (ttl ${ttlMinutes} min)\n`,
+  )
+
+  for (const r of rows) {
+    const mins = Math.floor((now.getTime() - r.usedAt.getTime()) / 60_000)
+    console.log(
+      `  ${fmtBytes(r.bytes)} · ${r.hostId} · last used ${mins} min ago` +
+        (r.refs !== 0 ? ` · IN USE (${r.refs})` : ''),
+    )
+  }
 }
 
 if (import.meta.main) {

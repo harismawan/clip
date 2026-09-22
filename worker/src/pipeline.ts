@@ -6,12 +6,12 @@
  * rather than the job so a regenerate or a re-cut does not pay for them twice.
  */
 import { join } from 'node:path'
-import { mkdir, rm, access, readFile } from 'node:fs/promises'
+import { mkdir, rm, readFile } from 'node:fs/promises'
 import { eq, desc } from 'drizzle-orm'
 import { db, jobs, videos, transcripts, clips, renders } from './db.ts'
 import { env } from './env.ts'
 import { report, setStatus, assertNotCancelled, CancelledError, forgetJob } from './progress.ts'
-import { assertYtdlpFresh, assertDiskSpace, download, probe } from '../../shared/ytdlp.ts'
+import { acquireSource, type SourceLease } from './sourceCache.ts'
 import { transcribe } from './stages/transcribe.ts'
 import { analyze } from './stages/analyze.ts'
 import { renderClip } from './stages/render.ts'
@@ -20,7 +20,6 @@ import { buildSourceAssets } from './stages/sourceAssets.ts'
 import { sweepSourceProxies } from './retention.ts'
 import { validateRanges, textInRange } from './ranges.ts'
 import { wrapHookLine } from './srt.ts'
-import { ownsScratch } from './scratch.ts'
 import { keys, storage } from './db.ts'
 import { RATIOS } from '../../shared/types.ts'
 import type { Ratio } from '../../shared/types.ts'
@@ -30,6 +29,9 @@ import type { S3 } from '../../shared/s3.ts'
 
 export async function processJob(jobId: string): Promise<void> {
   const workDir = join(env.WORK_DIR, jobId)
+  // Declared out here so `finally` can give it back on every exit path. A lease
+  // that is never released makes its file immortal until this host reboots.
+  let lease: SourceLease | null = null
 
   try {
     const [job] = await db.select().from(jobs).where(eq(jobs.id, jobId)).limit(1)
@@ -57,7 +59,10 @@ export async function processJob(jobId: string): Promise<void> {
 
     // --- 1. download ---------------------------------------------------------
     await assertNotCancelled(jobId)
-    const sourcePath = await ensureDownloaded(jobId, video, workDir)
+    // Held for the whole job: everything below reads this file, and the sweep
+    // must not take it away mid-render. Released in `finally`.
+    lease = await acquireSource(jobId, video)
+    const sourcePath = lease.path
 
     // --- 2. transcribe -------------------------------------------------------
     await assertNotCancelled(jobId)
@@ -73,6 +78,15 @@ export async function processJob(jobId: string): Promise<void> {
 
     // --- 3. analyse ----------------------------------------------------------
     await assertNotCancelled(jobId)
+    /**
+     * ponytail: the bar cannot move during the model call -- the provider
+     * streams no progress, and inventing a creeping percentage would be a lie
+     * told to the one person who cannot check it. So the stage announces what
+     * it is doing and holds, and only moves on work actually finished.
+     *
+     * Upgrade path: if the provider ever reports token progress, or analyze()
+     * is split into per-chunk calls, feed the fraction through report() here.
+     */
     await setStatus(jobId, { status: 'analyzing', stage: 'Scoring moments', progress: 48 })
 
     const candidates = await analyze({
@@ -82,6 +96,10 @@ export async function processJob(jobId: string): Promise<void> {
       count: job.clipCount,
       title: video.title,
     })
+
+    // The scoring is the long half of this stage; validation is fast. Moving
+    // here proves the model answered rather than hung.
+    await report(jobId, 'analyzing', 'Choosing clips', 0.7)
 
     const ranges = validateRanges(candidates, {
       durationSeconds: video.durationSeconds,
@@ -145,7 +163,7 @@ export async function processJob(jobId: string): Promise<void> {
 
     // --- 5. finalize ---------------------------------------------------------
     await setStatus(jobId, { status: 'rendering', stage: 'Cleaning up', progress: 96 })
-    await cleanup(workDir, video.id)
+    await rm(workDir, { recursive: true, force: true }).catch(() => {})
 
     await setStatus(jobId, {
       status: 'completed',
@@ -155,8 +173,10 @@ export async function processJob(jobId: string): Promise<void> {
       completedAt: new Date(),
     })
   } catch (e) {
-    // Scratch is deleted on every exit path. Leaving a multi-GB download behind
-    // after a failure is how 14GB of free disk disappears in three attempts.
+    // Scratch is deleted on every exit path. Leaving the intermediate renders
+    // behind after a failure is how free disk disappears in three attempts.
+    // (The source itself is not in here any more -- it is leased, and released
+    // in `finally` for the sweep to reclaim on its own schedule.)
     await rm(workDir, { recursive: true, force: true }).catch(() => {})
 
     if (e instanceof CancelledError) {
@@ -177,77 +197,9 @@ export async function processJob(jobId: string): Promise<void> {
       completedAt: new Date(),
     }).catch(() => {})
   } finally {
+    await lease?.release()
     forgetJob(jobId)
   }
-}
-
-/**
- * Download unless THIS operation already left a usable file behind.
- *
- * The ownership check is the whole point. `videos.scratch_path` is global but
- * names a file inside one operation's scratch directory, and every exit path
- * deletes that directory -- so adopting another operation's download means
- * rendering from a file that vanishes when its owner finishes. The process and
- * re-cut queues poll independently, so a job and a re-cut of the same source
- * really do overlap.
- *
- * Nothing is given up by scoping it: cleanup() nulls the column after every
- * successful job, so a later operation re-downloads regardless. The only window
- * in which another operation could ever have read this path was the racy one.
- */
-async function ensureDownloaded(
-  /**
-   * Whose progress bar to move, or null when nothing is watching. A source-asset
-   * build belongs to a video rather than to any one project, so it passes null
-   * rather than borrowing a job id it does not act on.
-   */
-  jobId: string | null,
-  video: typeof videos.$inferSelect,
-  workDir: string,
-  /**
-   * Leave the job's public status alone.
-   *
-   * A re-cut and a backfill both run against a job that is already `completed`,
-   * and announcing 'downloading' on one takes it out of that state: the results
-   * screen reads jobStatus 'downloading' and jobDone false, and a second /redo
-   * then 409s because it requires status === 'completed'. The download and its
-   * disk guards are unchanged -- only the announcement is suppressed.
-   */
-  opts: { quiet?: boolean } = {},
-): Promise<string> {
-  const announce = async (stage: string, fraction: number) => {
-    if (opts.quiet || !jobId) return
-    await report(jobId, 'downloading', stage, fraction)
-  }
-
-  if (
-    video.scratchPath &&
-    ownsScratch(video.scratchPath, workDir) &&
-    (await fileExists(video.scratchPath))
-  ) {
-    await announce('Using cached download', 1)
-    return video.scratchPath
-  }
-
-  await assertYtdlpFresh(env.YTDLP_MAX_AGE_DAYS)
-
-  // Re-probe for a current size estimate: the disk guard is only useful with a
-  // number, and the stored row may predate the current format availability.
-  const info = await probe(video.url).catch(() => null)
-  await assertDiskSpace(env.WORK_DIR, info?.estimatedBytes ?? null, env.MIN_FREE_DISK_GB)
-
-  if (!opts.quiet) {
-    if (jobId && !opts.quiet) {
-    await setStatus(jobId, { status: 'downloading', stage: 'Downloading source', progress: 0 })
-  }
-  }
-
-  const path = await download(video.url, workDir, (f) => {
-    void announce('Downloading source', f)
-  })
-
-  await db.update(videos).set({ scratchPath: path }).where(eq(videos.id, video.id))
-  return path
 }
 
 /** Reuse an existing transcript for this video; otherwise produce one. */
@@ -275,9 +227,21 @@ async function ensureTranscript(
   await setStatus(jobId, { status: 'transcribing', stage: 'Transcribing', progress: 24 })
 
   // 1. Try fetching auto-captions / subtitles directly (if enabled, instant & high accuracy)
+  /**
+   * Name the fetch, because it is not instant on a long video and it reports
+   * nothing while it runs. Without this the bar sat at 24% under the word
+   * "Transcribing" for the whole fetch, which reads identically to a stall.
+   */
+  if (env.PREFER_YOUTUBE_SUBTITLES) {
+    await report(jobId, 'transcribing', 'Fetching captions', 0)
+  }
   let result = env.PREFER_YOUTUBE_SUBTITLES
     ? await tryFetchYouTubeSubtitles(videoUrl, workDir, `[pipeline ${jobId}]`)
     : null
+
+  // Captions arrive whole rather than progressively, so this is the only
+  // honest place to move the bar for that path: it is done.
+  if (result) await report(jobId, 'transcribing', 'Captions ready', 1)
 
   // 2. Fallback to local Whisper if subtitles are unavailable
   if (!result) {
@@ -374,12 +338,6 @@ async function storeEditorAssets(
   }
 }
 
-/** Delete scratch and forget the cached download path. */
-async function cleanup(workDir: string, videoId: string): Promise<void> {
-  await rm(workDir, { recursive: true, force: true }).catch(() => {})
-  await db.update(videos).set({ scratchPath: null }).where(eq(videos.id, videoId))
-}
-
 /**
  * Build editor assets for a finished job's clips, without re-rendering them.
  *
@@ -394,12 +352,11 @@ export async function backfillAssets(jobId: string): Promise<void> {
   const workDir = join(env.WORK_DIR, `assets-${jobId}`)
   // Captured out here so the cleanup in `finally` can null the scratch path it
   // claimed, on the failure paths as well as the happy one.
-  let videoId = ''
+  let lease: SourceLease | null = null
 
   try {
     const [job] = await db.select().from(jobs).where(eq(jobs.id, jobId)).limit(1)
     if (!job) throw new Error('Job no longer exists')
-    videoId = job.videoId
 
     const [video] = await db.select().from(videos).where(eq(videos.id, job.videoId)).limit(1)
     if (!video) throw new Error('Source video row is missing')
@@ -411,7 +368,8 @@ export async function backfillAssets(jobId: string): Promise<void> {
     await mkdir(workDir, { recursive: true })
     // Quiet: this job finished long ago and must not be dragged back into
     // 'downloading' just because somebody opened its editor.
-    const sourcePath = await ensureDownloaded(jobId, video, workDir, { quiet: true })
+    lease = await acquireSource(jobId, video, { quiet: true })
+    const sourcePath = lease.path
 
     for (const clip of pending) {
       await storeEditorAssets(clip, sourcePath, workDir, video.durationSeconds, store)
@@ -424,12 +382,11 @@ export async function backfillAssets(jobId: string): Promise<void> {
     // editor falls back to the rendered clip and says the preview is limited.
     console.error(`[pipeline] asset backfill for job ${jobId} failed:`, (e as Error).message)
   } finally {
-    // Scratch goes on every exit path, as everywhere else in this file: a
-    // multi-GB download left behind is how the box runs out of disk.
+    // Scratch goes on every exit path, as everywhere else in this file. The
+    // source is not in it -- that is leased, and released here so the sweep can
+    // reclaim it once nothing is reading it.
     await rm(workDir, { recursive: true, force: true }).catch(() => {})
-    if (videoId) {
-      await db.update(videos).set({ scratchPath: null }).where(eq(videos.id, videoId)).catch(() => {})
-    }
+    await lease?.release()
   }
 }
 
@@ -440,6 +397,7 @@ export async function backfillAssets(jobId: string): Promise<void> {
  */
 export async function recutClip(jobId: string, clipId: string): Promise<void> {
   const workDir = join(env.WORK_DIR, `recut-${clipId}`)
+  let lease: SourceLease | null = null
 
   try {
     const [clip] = await db.select().from(clips).where(eq(clips.id, clipId)).limit(1)
@@ -463,8 +421,17 @@ export async function recutClip(jobId: string, clipId: string): Promise<void> {
     const store = await storage.active()
 
     await mkdir(workDir, { recursive: true })
-    // Quiet: this job is already 'completed' and must stay that way.
-    const sourcePath = await ensureDownloaded(jobId, video, workDir, { quiet: true })
+    /**
+     * Quiet: this job is already 'completed' and must stay that way.
+     *
+     * This is the call the whole shared cache exists for. A re-cut follows a
+     * saved trim, which follows opening the editor -- and opening the editor
+     * downloaded this exact file minutes ago to build the source proxy. Before
+     * the cache it was in another operation's scratch directory and therefore
+     * unreadable, so this re-downloaded gigabytes it already had.
+     */
+    lease = await acquireSource(jobId, video, { quiet: true })
+    const sourcePath = lease.path
 
     // Drop the previous renders, in storage as well as in the database. Each row
     // carries its own backend: an old render may predate the current write
@@ -507,15 +474,7 @@ export async function recutClip(jobId: string, clipId: string): Promise<void> {
       .catch(() => {})
   } finally {
     await rm(workDir, { recursive: true, force: true }).catch(() => {})
-  }
-}
-
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    await access(path)
-    return true
-  } catch {
-    return false
+    await lease?.release()
   }
 }
 
@@ -531,6 +490,7 @@ async function fileExists(path: string): Promise<boolean> {
  */
 export async function buildSourceProxy(videoId: string, jobId: string): Promise<void> {
   const workDir = join(env.WORK_DIR, `source-${videoId}`)
+  let lease: SourceLease | null = null
 
   try {
     const [video] = await db.select().from(videos).where(eq(videos.id, videoId)).limit(1)
@@ -548,8 +508,10 @@ export async function buildSourceProxy(videoId: string, jobId: string): Promise<
     const store = await storage.active()
     await mkdir(workDir, { recursive: true })
     // Quiet: whichever job asked for this finished long ago, and dragging it
-    // back into 'downloading' would make every write path refuse it.
-    const sourcePath = await ensureDownloaded(null, video, workDir, { quiet: true })
+    // back into 'downloading' would make every write path refuse it. Null job
+    // id for the same reason: this build belongs to a video, not a project.
+    lease = await acquireSource(null, video, { quiet: true })
+    const sourcePath = lease.path
 
     const built = await buildSourceAssets({
       sourcePath,
@@ -593,7 +555,13 @@ export async function buildSourceProxy(videoId: string, jobId: string): Promise<
     console.error(`[pipeline] source assets for video ${videoId} failed:`, (e as Error).message)
   } finally {
     await rm(workDir, { recursive: true, force: true }).catch(() => {})
-    await db.update(videos).set({ scratchPath: null }).where(eq(videos.id, videoId)).catch(() => {})
+    /**
+     * Released BEFORE the sweep below, not after. This build is usually
+     * followed within minutes by the re-cut that saves a trim, so the file
+     * stays cached -- but holding the lease across the sweep would make the
+     * source structurally un-evictable exactly when the disk is tightest.
+     */
+    await lease?.release()
   }
 
   /**

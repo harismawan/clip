@@ -57,6 +57,13 @@
       "when": 1790087197275,
       "tag": "0007_wealthy_ricochet",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790114208989,
+      "tag": "0008_dark_fat_cobra",
+      "breakpoints": true
     }
   ]
 }

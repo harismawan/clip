@@ -10,10 +10,13 @@
  * whole schedule: the operation that grows storage is the one that shrinks it,
  * so there is no cron to forget. `bun run proxies --sweep` forces it by hand.
  */
-import { eq, isNotNull } from 'drizzle-orm'
-import { db, videos, storage } from './db.ts'
+import { rm } from 'node:fs/promises'
+import { dirname } from 'node:path'
+import { eq, and, isNotNull } from 'drizzle-orm'
+import { db, videos, videoSourceCache, storage } from './db.ts'
 import { env } from './env.ts'
 import { evictionPlan } from '../../shared/retention.ts'
+import { sourceEvictionPlan } from '../../shared/sourceCache.ts'
 import { fmtBytes } from '../../shared/format.ts'
 
 export interface SweepResult {
@@ -89,4 +92,90 @@ export async function sweepSourceProxies(): Promise<SweepResult> {
   }
 
   return { evicted, freedBytes, spared: plan.blockedByGrace ? 1 : 0 }
+}
+
+/**
+ * Evict cached original downloads on THIS host's disk.
+ *
+ * The sibling of sweepSourceProxies above, and deliberately the same shape:
+ * shared/sourceCache.ts decides, this half touches the world. What differs is
+ * what is at stake. A proxy evicted wrongly costs a re-encode; a source
+ * evicted wrongly kills a render mid-write, on a file it did not create and
+ * cannot get back. Hence the ref count the planner bends everything around.
+ *
+ * Runs at worker startup, after every released lease, and once more before any
+ * download -- so the budget makes room for the file about to arrive rather than
+ * only tidying up behind it. That last one is why an 8GB cache does not cause
+ * the disk-full failures it exists to absorb.
+ *
+ * HOST-SCOPED, ALWAYS. `path` is absolute on one machine, and deleting by a
+ * path another host recorded would either miss or, far worse, hit an unrelated
+ * file of the same name.
+ */
+export async function sweepSources(): Promise<SweepResult> {
+  const rows = await db
+    .select()
+    .from(videoSourceCache)
+    .where(eq(videoSourceCache.hostId, env.WORKER_HOST_ID))
+
+  const plan = sourceEvictionPlan(
+    rows.map((r) => ({ id: r.videoId, bytes: r.bytes, usedAt: r.usedAt, refs: r.refs })),
+    {
+      budgetBytes: env.SOURCE_BUDGET_GB * 1024 ** 3,
+      ttlMinutes: env.SOURCE_TTL_MINUTES,
+      now: new Date(),
+    },
+  )
+
+  if (plan.overBudgetBytes > 0) {
+    console.warn(
+      `[sources] ${fmtBytes(plan.overBudgetBytes)} over budget with ` +
+        `${fmtBytes(plan.heldBytes)} held by running work. Leaving it; the next ` +
+        `sweep will retry once those leases are released.`,
+    )
+  }
+
+  let evicted = 0
+  let freedBytes = 0
+
+  for (const target of plan.evict) {
+    const row = rows.find((r) => r.videoId === target.id)
+    if (!row) continue
+
+    /**
+     * The file, then the row -- never the other way round.
+     *
+     * Forgetting the path while the file survives leaves an orphan no future
+     * sweep can find, silently holding budget forever. The proxy sweep above
+     * states the same rule for the same reason. A failed delete keeps the row
+     * and retries next time.
+     */
+    try {
+      await rm(dirname(row.path), { recursive: true, force: true })
+    } catch (e) {
+      console.error(
+        `[sources] keeping ${row.videoId}: could not delete ${dirname(row.path)} ` +
+          `(${(e as Error).message}), and forgetting it would orphan the file.`,
+      )
+      continue
+    }
+
+    await db
+      .delete(videoSourceCache)
+      .where(
+        and(
+          eq(videoSourceCache.videoId, row.videoId),
+          eq(videoSourceCache.hostId, env.WORKER_HOST_ID),
+        ),
+      )
+
+    evicted++
+    freedBytes += row.bytes
+  }
+
+  if (evicted) {
+    console.log(`[sources] evicted ${evicted} cached source(s), freed ${fmtBytes(freedBytes)}`)
+  }
+
+  return { evicted, freedBytes, spared: plan.heldBytes > 0 ? 1 : 0 }
 }

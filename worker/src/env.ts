@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { resolve } from 'node:path'
+import { hostname } from 'node:os'
 
 const schema = z.object({
   DATABASE_URL: z.string().min(1),
@@ -39,6 +40,32 @@ const schema = z.object({
   PROXY_TTL_DAYS: z.coerce.number().default(30),
   /** Never evict something opened this recently, even to get under budget. */
   PROXY_GRACE_MINUTES: z.coerce.number().default(30),
+
+  /**
+   * Retention for cached ORIGINAL downloads. See shared/sourceCache.ts.
+   *
+   * Sized against the same ~20GB as PROXY_BUDGET_GB above, minus that 6GB and
+   * the 5GB floor MIN_FREE_DISK_GB keeps free. 8GB comfortably holds one
+   * typical source and often two.
+   *
+   * MINUTES, NOT DAYS, unlike the proxy TTL. This cache exists to bridge one
+   * editing session -- open the editor, trim, save, trim again -- not to be a
+   * library. Holding 8GB for a session that ended is pure waste on a disk that
+   * also has to fit the next download.
+   */
+  SOURCE_BUDGET_GB: z.coerce.number().default(8),
+  SOURCE_TTL_MINUTES: z.coerce.number().default(60),
+  /**
+   * Which worker's disk a cached source lives on.
+   *
+   * Every cache row is keyed by this, and a worker only ever reads, sweeps or
+   * resets rows carrying its own value -- `path` is absolute on one machine and
+   * workers may run on several, each with its own volume.
+   *
+   * Getting it wrong degrades to re-downloading, never to a missing file
+   * mid-render, because reuse also requires the file to exist.
+   */
+  WORKER_HOST_ID: z.string().min(1).default(hostname()),
   YTDLP_MAX_AGE_DAYS: z.coerce.number().default(60),
   PREFER_YOUTUBE_SUBTITLES: z
     .string()
