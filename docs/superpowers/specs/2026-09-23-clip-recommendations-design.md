@@ -60,9 +60,14 @@ error.
 
 One consequence: at `count: 8` the prompt asks for `min(40, ceil(8 × 1.8)) = 15`
 candidates, and `dropOverlaps` typically leaves two to five spare. That is a
-thin list to open with. When the flag is on the ask rises so the surplus lands
-around eight to ten. Extra candidate objects are a rounding error against a
+thin list to open with, so the analyse stage asks for `clipCount +
+RECOMMEND_POOL` instead. Extra candidate objects are a rounding error against a
 transcript that is already thousands of lines.
+
+The wider ask is **not** conditional on the flag. `RECOMMENDATIONS_ENABLED`
+lives in the API's environment and the worker has no view of it; rows nobody
+reads are cheaper than a third copy of one switch, and cheaper than the
+deploy-ordering bug where the two processes disagree about whether to collect.
 
 ### The model call for chat runs in the API, not the worker
 
