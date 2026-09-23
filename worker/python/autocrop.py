@@ -41,6 +41,21 @@ FACE_TOP, FACE_BOTTOM = 10, 152       # forehead / chin (normalise by face heigh
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "face_landmarker.task")
 
+# VIDEO_ENCODER=nvenc: the same switch the worker's ffmpeg.ts reads (see the
+# measurements there -- it is slower than libx264 unless the CPU is the scarce
+# resource). MediaPipe stays on the CPU: its Python GPU delegate is not
+# supported on Linux, and it only sees a 480px frame at 5fps anyway.
+NVENC = os.environ.get("VIDEO_ENCODER") == "nvenc"
+
+
+def h264_args(preset, crf):
+    if NVENC:
+        # x264 presets mean nothing to NVENC; p4 is its balanced default.
+        return ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr",
+                "-cq", str(crf), "-b:v", "0", "-pix_fmt", "yuv420p"]
+    return ["-c:v", "libx264", "-preset", preset, "-crf", str(crf),
+            "-pix_fmt", "yuv420p"]
+
 
 # ----------------------------------------------------------------------------
 # ffprobe / ffmpeg helpers
@@ -272,8 +287,8 @@ def render(path, out_path, centers_frac, analysis_fps, src_w, src_h,
 
     cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-stats", "-i", path,
            "-filter_complex", vf, "-map", "[v]", "-map", "0:a?",
-           "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
-           "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+           *h264_args(preset, crf),
+           "-c:a", "aac", "-b:a", "128k",
            "-movflags", "+faststart", out_path]
     try:
         subprocess.run(cmd, check=True)

@@ -13,6 +13,7 @@
 import { join } from 'node:path'
 import { run, runBinary } from '../../../shared/proc.ts'
 import { peaksFromPcm } from './editorAssets.ts'
+import { h264Args } from '../ffmpeg.ts'
 
 /**
  * Frames in the overview filmstrip.
@@ -67,14 +68,7 @@ export async function buildSourceAssets(opts: {
     '-vf',
     // -2 keeps width even, which yuv420p requires.
     'scale=-2:240',
-    '-c:v',
-    'libx264',
-    '-preset',
-    'veryfast',
-    '-crf',
-    '32',
-    '-pix_fmt',
-    'yuv420p',
+    ...h264Args(32),
     // Keyframe every second. Over a four-hour timeline this is what makes a
     // dropped playhead land where it was dropped rather than seconds earlier.
     '-g',

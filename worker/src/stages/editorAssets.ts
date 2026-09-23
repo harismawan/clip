@@ -17,7 +17,7 @@
 import { join } from 'node:path'
 import { run, runBinary } from '../../../shared/proc.ts'
 import { EDITOR_LEAD_IN as LEAD_IN, EDITOR_SPAN as SPAN } from '../../../shared/types.ts'
-import { probeDuration } from '../ffmpeg.ts'
+import { probeDuration, h264Args } from '../ffmpeg.ts'
 
 /** Frames tiled into the filmstrip. Mirrors FILMSTRIP_FRAMES on the editor screen. */
 export const STRIP_FRAMES = 16
@@ -146,14 +146,7 @@ export async function buildEditorAssets(opts: {
     '-vf',
     // -2 keeps width even, which yuv420p requires.
     'scale=-2:240',
-    '-c:v',
-    'libx264',
-    '-preset',
-    'veryfast',
-    '-crf',
-    '32',
-    '-pix_fmt',
-    'yuv420p',
+    ...h264Args(32),
     // Keyframe every second, so scrubbing lands near where it was dropped
     // rather than at the previous keyframe several seconds back.
     '-g',

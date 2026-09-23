@@ -50,14 +50,19 @@ export async function transcribe(
   // Audio extraction is ~5% of the work; keep the bar moving during it.
   await extractAudio(videoPath, audioPath, (f) => onProgress(f * 0.05), durationSeconds)
 
+  const cuda = env.WHISPER_DEVICE === 'cuda'
   const args = [
     WHISPER_BIN,
     audioPath,
     '--model',
     env.WHISPER_MODEL,
-    // int8 keeps the model inside a few hundred MB; this box has ~4GB free.
+    '--device',
+    env.WHISPER_DEVICE,
+    // int8 keeps the model inside a few hundred MB on CPU. float16 on CUDA:
+    // large-v3-turbo peaks ~2.7GB of VRAM that way. Set WHISPER_COMPUTE_TYPE=
+    // int8_float16 when the GPU is shared and tighter than that.
     '--compute_type',
-    'int8',
+    env.WHISPER_COMPUTE_TYPE || (cuda ? 'float16' : 'int8'),
     '--threads',
     String(env.WHISPER_THREADS),
     // Streams carry a lot of dead air; skipping it is a large real speedup.
