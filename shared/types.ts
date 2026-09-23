@@ -18,6 +18,42 @@ export const RATIO_DIMS: Record<Ratio, { w: number; h: number }> = {
 }
 
 /**
+ * Longest brief a user may attach to a job.
+ *
+ * Shared, not duplicated per side, because the two uses have to agree: the
+ * textarea stops typing here and the API rejects past here. Were they separate
+ * numbers and the frontend's the larger, the only way to find out would be a
+ * 400 after filling the box.
+ *
+ * 500 fits a sentence or two of "what I'm after". The cap exists because the
+ * text is pasted into an LLM prompt, where unbounded input is unbounded cost.
+ */
+export const MAX_PROMPT_CHARS = 500
+
+/**
+ * Longest single message in the recommendation chat.
+ *
+ * Shorter than MAX_PROMPT_CHARS on purpose. A brief is written once and steers
+ * a whole job; a chat message is one turn of many, every one of which re-sends
+ * the entire transcript alongside it. Keeping turns short is the only part of
+ * that cost this side controls.
+ */
+export const MAX_CHAT_CHARS = 280
+
+/**
+ * How many validated moments to keep beyond the ones that become clips.
+ *
+ * The analyse stage ranks more candidates than it needs and slices; this is how
+ * far down that ranking the opening recommendation list reaches. Generous
+ * rather than exact -- slicing a short array is not an error, and the surplus
+ * varies with how many overlaps dropOverlaps had to discard.
+ */
+export const RECOMMEND_POOL = 12
+
+/** How many moments a chat round asks for. */
+export const RECOMMEND_PER_ROUND = 8
+
+/**
  * Clip length windows, indexed by the setup screen's `lengthIdx`.
  * Mirrors the frontend's LENGTHS = ['<30s', '30-60s', '60-90s'].
  */
@@ -233,6 +269,45 @@ export interface ProgressEvent {
   stage: string | null
   progress: number
   error: string | null
+}
+
+/**
+ * A suggested moment, as the results screen renders it.
+ *
+ * Field names are spelled out rather than terse like ClipDTO's `t`/`s`/`e`.
+ * ClipDTO is terse because renaming its fields would touch every screen in the
+ * prototype; nothing constrains a new type to inherit that.
+ */
+export interface RecommendationDTO {
+  /** Position within its round. What POST /jobs/:id/clips takes as `indices`. */
+  idx: number
+  title: string
+  start: number
+  end: number
+  score: number
+  snippet: string
+  caption: string
+  line: string
+  /**
+   * True when an existing clip already covers this stretch of source.
+   *
+   * Computed per request by overlapping against the job's clips, not stored --
+   * the alternative is a column that has to be kept in step with every clip
+   * created, deleted or re-trimmed.
+   */
+  taken: boolean
+}
+
+export interface RecommendationRoundDTO {
+  id: string
+  /** Null for the opening round, which came free from the analyse stage. */
+  message: string | null
+  candidates: RecommendationDTO[]
+  createdAt: string
+}
+
+export interface RecommendationsDTO {
+  rounds: RecommendationRoundDTO[]
 }
 
 export interface CreateJobBody {

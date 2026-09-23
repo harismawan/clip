@@ -53,9 +53,30 @@ const html = (clips: Clip[], filter: Ratio = '9:16', editorEnabled = false) => {
       pending: null,
       playingClipId: null,
       source: null,
-      user: { id: 'u1', email: 'a@b.c', name: null, pictureUrl: null, editorEnabled },
+      /**
+       * Recommendations off throughout this file: it asserts the clip grid, and
+       * the panel renders null under the flag without reaching for its data.
+       * RecommendationPanel.test.tsx covers it with the flag on.
+       */
+      user: {
+        id: 'u1',
+        email: 'a@b.c',
+        name: null,
+        pictureUrl: null,
+        features: { editor: editorEnabled, recommendations: false },
+      },
+      recs: [],
+      recsLoading: false,
+      recsAsking: false,
+      recsError: null,
+      recsPicked: [],
+      recsCreating: false,
     },
     toggleClip: () => {},
+    loadRecommendations: () => {},
+    askRecommendations: () => {},
+    toggleRecommendation: () => {},
+    createFromRecommendations: () => {},
     openEditor: () => {},
     redoClip: () => {},
     openPlayer: () => {},

@@ -178,3 +178,34 @@ export interface Project {
   /** 0-100, the same number the banner shows. */
   progress: number
 }
+
+/**
+ * A moment the model suggests but nobody has clipped yet. Mirrors
+ * RecommendationDTO in shared/types.ts.
+ *
+ * Field names are spelled out rather than terse like Clip's `t`/`s`/`e`. Clip
+ * is terse because renaming its fields would touch every screen carried over
+ * from the prototype; nothing obliges a new type to inherit that.
+ */
+export interface Recommendation {
+  /** Position within its round. What POST /jobs/:id/clips takes as `indices`. */
+  idx: number
+  title: string
+  start: number
+  end: number
+  score: number
+  snippet: string
+  caption: string
+  line: string
+  /** An existing clip already covers this stretch. Server-computed per request. */
+  taken: boolean
+}
+
+/** One exchange: what was asked, and what came back. */
+export interface RecommendationRound {
+  id: string
+  /** Null for the opening round, which came free with the job's own analysis. */
+  message: string | null
+  candidates: Recommendation[]
+  createdAt: string
+}

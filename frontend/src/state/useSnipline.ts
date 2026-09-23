@@ -5,7 +5,7 @@ import { loadPersisted, savePersisted } from '../lib/persist'
 import { anyProjectRunning } from '../lib/derive'
 import { api, auth, ApiError, type Me } from '../lib/api'
 import type { JobSnapshot } from '../lib/api'
-import type { Clip, JobStatus, Project, QuotaDTO, Ratio, Screen, Source, SourceKey } from '../types'
+import type { Clip, JobStatus, Project, QuotaDTO, Ratio, Screen, Source, SourceKey, RecommendationRound } from '../types'
 
 /**
  * How often the projects list refetches while something is running.
@@ -56,6 +56,14 @@ export interface SnipState {
   source: Source | null
   count: number
   lengthIdx: number
+  /**
+   * What the user wants the clips to be about, in their own words.
+   *
+   * Per-video input, NOT a durable preference -- "only the parts about his
+   * first startup failing" is meaningless for the next link -- so it is absent
+   * from savePersisted and cleared by goNew along with the url it described.
+   */
+  prompt: string
   formats: Record<Ratio, boolean>
   subs: boolean
   emailMe: boolean
@@ -104,6 +112,33 @@ export interface SnipState {
    * re-render the entire app on every tick.
    */
   regenerating: Record<string, boolean>
+
+  /**
+   * Suggested moments for the open project, oldest round first, and the
+   * conversation that shaped them.
+   *
+   * Only the NEWEST round is live -- it is what the panel lists and what
+   * recsPicked indexes into. Older rounds survive as chat history; asking again
+   * appends rather than replaces, so what the user typed stays on screen.
+   *
+   * Not persisted. The server owns every round, and a list restored from
+   * localStorage would be a snapshot of somebody's clips from a week ago with
+   * `taken` computed against a project that has changed since.
+   */
+  recs: RecommendationRound[]
+  /** The first fetch, which happens on landing. Distinct from recsAsking. */
+  recsLoading: boolean
+  /**
+   * A chat turn is in flight. Separate from recsLoading because it takes five
+   * to fifteen seconds and the user is watching a box they just typed into:
+   * the two states need different words on screen.
+   */
+  recsAsking: boolean
+  recsError: string | null
+  /** Indices into the live round. Cleared whenever a new round arrives. */
+  recsPicked: number[]
+  recsCreating: boolean
+
   toast: string | null
   pwCurrent: string
   pwNext: string
@@ -116,6 +151,7 @@ const initialState: SnipState = {
   source: null,
   count: 12,
   lengthIdx: 1,
+  prompt: '',
   formats: { '9:16': true, '1:1': true, '4:5': false },
   subs: true,
   emailMe: true,
@@ -139,6 +175,12 @@ const initialState: SnipState = {
   // clip's renders with this now, and only convert for the style attribute.
   ratio: '9:16',
   regenerating: {},
+  recs: [],
+  recsLoading: false,
+  recsAsking: false,
+  recsError: null,
+  recsPicked: [],
+  recsCreating: false,
   toast: null,
   pwCurrent: '',
   pwNext: '',
@@ -618,6 +660,7 @@ export function useSnipline() {
         lengthIdx: state.lengthIdx,
         formats: state.formats,
         subs: state.subs,
+        prompt: state.prompt,
       })
       setState((s) => ({
         ...s,
@@ -725,7 +768,10 @@ export function useSnipline() {
     })
   }, [patch])
 
-  const goNew = useCallback(() => patch({ screen: 'new', url: '', source: null }), [patch])
+  const goNew = useCallback(
+    () => patch({ screen: 'new', url: '', source: null, prompt: '' }),
+    [patch],
+  )
 
   /** Reopen a past project, re-fetching its clips. */
   const openProject = useCallback(
@@ -788,6 +834,7 @@ export function useSnipline() {
 
   const setCount = useCallback((count: number) => patch({ count }), [patch])
   const setLengthIdx = useCallback((lengthIdx: number) => patch({ lengthIdx }), [patch])
+  const setPrompt = useCallback((prompt: string) => patch({ prompt }), [patch])
   const cycleLength = useCallback(
     () => setState((s) => ({ ...s, lengthIdx: (s.lengthIdx + 1) % LENGTHS.length })),
     [],
@@ -906,6 +953,111 @@ export function useSnipline() {
     [say, fail, pollClip],
   )
 
+  // ---- recommendations ----------------------------------------------------
+
+  /**
+   * Load the suggested moments for the open project.
+   *
+   * Tolerant of failure on purpose: this is a panel below the clips, and a
+   * project whose clips rendered fine must not look broken because one extra
+   * request 404'd. The flag being off is the ordinary case for that 404.
+   */
+  const loadRecommendations = useCallback(async () => {
+    const jobId = state.jobId
+    if (!jobId || !state.user?.features?.recommendations) return
+
+    setState((s) => ({ ...s, recsLoading: true, recsError: null }))
+    try {
+      const { rounds } = await api.recommendations(jobId)
+      setState((s) =>
+        s.jobId === jobId ? { ...s, recs: rounds, recsPicked: [], recsLoading: false } : s,
+      )
+    } catch {
+      // No toast. Nobody asked for this list; failing to fetch it is not an
+      // event worth interrupting them over.
+      setState((s) => (s.jobId === jobId ? { ...s, recs: [], recsLoading: false } : s))
+    }
+  }, [state.jobId, state.user])
+
+  /** Ask for a different set. Appends a round; the newest one becomes live. */
+  const askRecommendations = useCallback(
+    async (message: string) => {
+      const jobId = state.jobId
+      const text = message.trim()
+      if (!jobId || !text) return
+
+      setState((s) => ({ ...s, recsAsking: true, recsError: null }))
+      try {
+        const round = await api.recommend(jobId, text)
+        setState((s) =>
+          s.jobId === jobId
+            ? { ...s, recs: [...s.recs, round], recsPicked: [], recsAsking: false }
+            : s,
+        )
+      } catch (e) {
+        /**
+         * Shown in the panel, not as a toast. The message belongs next to the
+         * box it came from -- a quota or 503 refusal is something to read and
+         * act on, and a toast is gone in 2.6 seconds.
+         */
+        const msg = e instanceof ApiError ? e.message : 'Could not reach the server.'
+        setState((s) => (s.jobId === jobId ? { ...s, recsAsking: false, recsError: msg } : s))
+      }
+    },
+    [state.jobId],
+  )
+
+  const toggleRecommendation = useCallback(
+    (idx: number) =>
+      setState((s) => ({
+        ...s,
+        recsPicked: s.recsPicked.includes(idx)
+          ? s.recsPicked.filter((i) => i !== idx)
+          : [...s.recsPicked, idx],
+      })),
+    [],
+  )
+
+  /**
+   * Render chosen moments as clips.
+   *
+   * They arrive `pending` and render on the same queue as Redo, so this waits
+   * on them the same way. refreshJob first, so the cards appear immediately
+   * rather than at the end of the last render.
+   */
+  const createFromRecommendations = useCallback(
+    async (indices: number[]) => {
+      const jobId = state.jobId
+      const live = state.recs[state.recs.length - 1]
+      if (!jobId || !live || indices.length === 0) return
+
+      setState((s) => ({ ...s, recsCreating: true, recsError: null }))
+
+      let created: Clip[]
+      try {
+        created = await api.createClips(jobId, live.id, indices)
+      } catch (e) {
+        const msg = e instanceof ApiError ? e.message : 'Could not reach the server.'
+        setState((s) => ({ ...s, recsCreating: false, recsError: msg }))
+        return
+      }
+
+      say(created.length === 1 ? 'Creating that clip…' : `Creating ${created.length} clips…`)
+      await refreshJob(jobId)
+      setState((s) => ({ ...s, recsCreating: false, recsPicked: [] }))
+
+      const settled = await Promise.all(created.map((c) => pollClip(c.id)))
+      // Re-reading the rounds is what moves `taken` on: it is computed by the
+      // server against the clips that now exist.
+      await loadRecommendations()
+
+      const ok = settled.filter((c) => c?.status === 'ready').length
+      if (ok === settled.length) say(ok === 1 ? 'Clip ready.' : `${ok} clips ready.`)
+      else say('Some of those are still rendering; refresh to check.')
+    },
+    [state.jobId, state.recs, say, refreshJob, pollClip, loadRecommendations],
+  )
+
   // ---- player -------------------------------------------------------------
 
   const openPlayer = useCallback((id: string) => patch({ playingClipId: id }), [patch])
@@ -928,7 +1080,7 @@ export function useSnipline() {
          * not rendered -- but a stale tab or a replayed action must not be able
          * to navigate to a screen whose API routes answer 404.
          */
-        if (!s.user?.editorEnabled) return s
+        if (!s.user?.features?.editor) return s
 
         const clip = s.clips.find((c) => c.id === id)
         return {
@@ -1171,6 +1323,11 @@ export function useSnipline() {
     loadSample,
     setCount,
     setLengthIdx,
+    setPrompt,
+    loadRecommendations,
+    askRecommendations,
+    toggleRecommendation,
+    createFromRecommendations,
     cycleLength,
     toggleFormat,
     toggleSubs,

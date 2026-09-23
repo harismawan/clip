@@ -23,7 +23,7 @@ import {
   PROCESS_QUEUE,
 } from '../queue.ts'
 import { subscribe, ensureListening } from '../events.ts'
-import { isTerminal, RATIOS, TERMINAL_STATUSES } from '../../../shared/types.ts'
+import { isTerminal, MAX_PROMPT_CHARS, RATIOS, TERMINAL_STATUSES } from '../../../shared/types.ts'
 import type { ProjectDTO, QuotaDTO, Ratio } from '../../../shared/types.ts'
 import { storage } from '../s3.ts'
 
@@ -33,6 +33,14 @@ const createBody = z.object({
   lengthIdx: z.number().int().min(0).max(2),
   formats: z.record(z.boolean()),
   subs: z.boolean(),
+  /**
+   * Optional brief steering which moments get picked. Capped because it is
+   * pasted into an LLM prompt: a caller is otherwise free to send a megabyte
+   * and make every job of theirs cost a fortune in tokens. 500 is generous for
+   * a sentence or two of "what I'm after". Shared with the textarea's
+   * maxLength so the box cannot accept what this would reject.
+   */
+  prompt: z.string().trim().max(MAX_PROMPT_CHARS).optional(),
 })
 
 export const jobsRoutes = new Hono()
@@ -76,6 +84,8 @@ jobsRoutes.post('/', async (c) => {
       lengthPreset: b.lengthIdx,
       formats: Object.fromEntries(enabled.map((r) => [r, true])),
       burnSubtitles: b.subs,
+      // '' and "  " both mean no brief; store NULL so the worker has one case.
+      prompt: b.prompt || null,
       status: 'pending',
       stage: 'Queued',
     })

@@ -51,7 +51,7 @@ export default function App() {
           while the editor is off, but a restored session or a stale state
           should not be able to mount it either.
         */}
-        {state.screen === 'editor' && state.user?.editorEnabled && <EditorScreen />}
+        {state.screen === 'editor' && state.user?.features?.editor && <EditorScreen />}
         {Inside && (
           <AppShell>
             <Inside />

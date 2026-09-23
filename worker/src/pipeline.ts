@@ -8,7 +8,7 @@
 import { join } from 'node:path'
 import { mkdir, rm, readFile } from 'node:fs/promises'
 import { eq, desc } from 'drizzle-orm'
-import { db, jobs, videos, transcripts, clips, renders } from './db.ts'
+import { db, jobs, videos, transcripts, clips, renders, recommendationRounds } from './db.ts'
 import { env } from './env.ts'
 import { report, setStatus, assertNotCancelled, CancelledError, forgetJob } from './progress.ts'
 import { acquireSource, type SourceLease } from './sourceCache.ts'
@@ -18,10 +18,10 @@ import { renderClip } from './stages/render.ts'
 import { buildEditorAssets, needingAssets } from './stages/editorAssets.ts'
 import { buildSourceAssets } from './stages/sourceAssets.ts'
 import { sweepSourceProxies } from './retention.ts'
-import { validateRanges, textInRange } from './ranges.ts'
+import { validateRanges, textInRange } from '../../shared/clipRanges.ts'
 import { wrapHookLine } from './srt.ts'
 import { keys, storage } from './db.ts'
-import { RATIOS } from '../../shared/types.ts'
+import { RATIOS, RECOMMEND_POOL } from '../../shared/types.ts'
 import type { Ratio } from '../../shared/types.ts'
 import type { TranscriptSegment } from '../../shared/schema.ts'
 import { tryFetchYouTubeSubtitles } from './youtube_subs.ts'
@@ -89,24 +89,59 @@ export async function processJob(jobId: string): Promise<void> {
      */
     await setStatus(jobId, { status: 'analyzing', stage: 'Scoring moments', progress: 48 })
 
+    /**
+     * Enough for the clips AND the opening recommendation list.
+     *
+     * The prompt asks for ~1.8x this, because validation drops overlaps and
+     * out-of-window ranges. At clipCount alone the surplus after dropOverlaps
+     * is two or three moments -- too thin a list to open with. Asking wider
+     * costs a few more objects in one response, against a transcript that is
+     * already thousands of lines.
+     *
+     * Not conditional on the recommendations flag: that lives in the API's env,
+     * the worker has no view of it, and rows nobody reads are cheaper than a
+     * third copy of one switch.
+     */
+    const wanted = job.clipCount + RECOMMEND_POOL
+
     const candidates = await analyze({
       segments,
       durationSeconds: video.durationSeconds,
       lengthIdx: job.lengthPreset,
-      count: job.clipCount,
+      count: wanted,
       title: video.title,
+      // Read off the job row, which is why regenerate honours the brief without
+      // knowing it exists: it re-runs this same row.
+      brief: job.prompt,
     })
 
     // The scoring is the long half of this stage; validation is fast. Moving
     // here proves the model answered rather than hung.
     await report(jobId, 'analyzing', 'Choosing clips', 0.7)
 
-    const ranges = validateRanges(candidates, {
+    /**
+     * Rank everything that survives validation, not just what becomes a clip.
+     *
+     * The model is asked for more candidates than the user wants because
+     * validation drops overlaps and out-of-window ranges, so a request for
+     * exactly `count` under-delivers. Whatever is left over used to be
+     * discarded by the .slice() inside validateRanges. It is the same fully
+     * validated output as the clips -- clamped, snapped to speech boundaries,
+     * fitted to the length window -- so it is worth keeping as the opening
+     * recommendation list, and keeping it costs one insert and no model call.
+     *
+     * Asking for a bigger `count` rather than changing validateRanges keeps its
+     * contract intact: clamp, snap, fit, drop overlaps, take the best N.
+     */
+    const ranked = validateRanges(candidates, {
       durationSeconds: video.durationSeconds,
       lengthIdx: job.lengthPreset,
-      count: job.clipCount,
+      count: wanted,
       segments,
     })
+
+    const ranges = ranked.slice(0, job.clipCount)
+    const surplus = ranked.slice(job.clipCount)
 
     if (ranges.length === 0) {
       throw new Error(
@@ -116,6 +151,19 @@ export async function processJob(jobId: string): Promise<void> {
 
     // Replace any previous clips (a regenerate re-enters here).
     await db.delete(clips).where(eq(clips.jobId, jobId))
+
+    /**
+     * The same applies to the conversation: a regenerate has just re-picked
+     * every clip, so rounds that avoided the OLD ones are advice about a list
+     * that no longer exists.
+     */
+    await db.delete(recommendationRounds).where(eq(recommendationRounds.jobId, jobId))
+
+    if (surplus.length > 0) {
+      // userMessage NULL: nobody asked for this round, it fell out of the
+      // analysis. The UI reads that as "no chat bubble to draw".
+      await db.insert(recommendationRounds).values({ jobId, userMessage: null, candidates: surplus })
+    }
 
     const clipRows = await db
       .insert(clips)
