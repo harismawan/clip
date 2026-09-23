@@ -163,6 +163,14 @@ export const CLIP_COUNT_DEFAULT = 12
 export const COUNT_HINTS = ['quick pass', 'recommended', 'go wide']
 
 /**
+ * Longest single message in the recommendation chat. Mirrors MAX_CHAT_CHARS in
+ * shared/types.ts, which is what the API validates against -- the frontend
+ * declares its own view of wire constants rather than importing across the
+ * workspace, so keep the two in step.
+ */
+export const MAX_CHAT_CHARS = 280
+
+/**
  * Audio levels behind the trim track, as percentages of the strip height.
  *
  * A fallback only: the editor draws `clip.peaks` measured from the real audio,

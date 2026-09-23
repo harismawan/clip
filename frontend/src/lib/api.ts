@@ -10,6 +10,7 @@ import type {
   Source,
   JobStatus,
   TranscriptLine,
+  RecommendationRound,
 } from '../types'
 
 /**
@@ -92,15 +93,19 @@ export interface Me {
   name: string | null
   pictureUrl: string | null
   /**
-   * Is the clip editor switched on?
+   * Which features this server has switched on.
    *
    * Server-owned, because the frontend is a static build and cannot read the
-   * server's environment. Read it as `state.user?.editorEnabled ?? false` so
-   * the feature stays hidden while /me is still in flight -- an editor that
+   * server's environment. Read each as `state.user?.features?.editor ?? false`
+   * -- defaulting to false while /me is still in flight, because a control that
    * flashes into view for a moment and then vanishes is worse than one that
-   * never appears.
+   * never appears. That is also why `features` itself is optional-chained: an
+   * older API answering this call has no such object.
    */
-  editorEnabled: boolean
+  features: {
+    editor: boolean
+    recommendations: boolean
+  }
 }
 
 export const auth = {
@@ -236,6 +241,40 @@ export const api = {
 
   regenerate: (id: string) =>
     call<{ jobId: string }>(`/jobs/${id}/regenerate`, { method: 'POST' }),
+
+  /**
+   * Suggested moments for a finished project, oldest round first.
+   *
+   * 404 when the feature is switched off, which is the same answer as a job
+   * that does not exist -- deliberately, see recommendationsGate.ts. The panel
+   * is hidden by the flag on /me long before this is called, so a 404 here
+   * means the flag changed under a tab that was already open.
+   */
+  recommendations: (jobId: string) =>
+    call<{ rounds: RecommendationRound[] }>(`/jobs/${jobId}/recommendations`),
+
+  /**
+   * Ask for a different set. Synchronous and slow by UI standards -- the server
+   * is waiting on a model, five to fifteen seconds -- so callers must show that
+   * something is happening rather than assume this returns promptly.
+   */
+  recommend: (jobId: string, message: string) =>
+    call<RecommendationRound>(`/jobs/${jobId}/recommendations`, {
+      method: 'POST',
+      body: JSON.stringify({ message }),
+    }),
+
+  /**
+   * Turn chosen recommendations into clips. Indices into the round, not raw
+   * ranges: the server re-reads its own stored candidate either way.
+   *
+   * The clips come back `pending`; they render on the same queue as Redo.
+   */
+  createClips: (jobId: string, roundId: string, indices: number[]) =>
+    call<Clip[]>(`/jobs/${jobId}/clips`, {
+      method: 'POST',
+      body: JSON.stringify({ roundId, indices }),
+    }),
 
   projects: () => call<Project[]>('/projects'),
 

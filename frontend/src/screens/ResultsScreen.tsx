@@ -1,5 +1,6 @@
 import { Button } from '../components/Button'
 import { Chip } from '../components/Chip'
+import { RecommendationPanel } from '../components/RecommendationPanel'
 import { FEATURES } from '../config'
 import { RATIOS } from '../data/fixtures'
 import { cn } from '../lib/cn'
@@ -23,7 +24,7 @@ export function ResultsScreen() {
 
   // Defaults to false: /me may not have answered yet, and a button that
   // appears and then disappears is worse than one that never appears.
-  const editorEnabled = state.user?.editorEnabled ?? false
+  const editorEnabled = state.user?.features?.editor ?? false
 
   const src = state.source
   const ordered = sortClips(state.clips, state.sortByScore)
@@ -235,6 +236,13 @@ export function ResultsScreen() {
             )
           })}
         </div>
+
+        {/*
+          Inside the scroll container, below the grid: a second look at a
+          project that already has results, which a happy user passes by simply
+          not scrolling.
+        */}
+        <RecommendationPanel />
       </div>
 
       {/*
