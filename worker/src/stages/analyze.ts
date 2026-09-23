@@ -1,60 +1,17 @@
 /**
  * Pick interesting ranges from the transcript, via OpenRouter.
  *
- * The model is given the TRANSCRIPT WITH TIMESTAMPS, never the video. That is
- * deliberate: shown a video, Gemini emits MM:SS, which is ambiguous past one
- * hour and silently yields clips past the end of the source (a trap documented
- * in clipper's unbuilt cutlist.py design). Working from segments we supplied,
- * it returns float seconds and the ambiguity cannot arise.
+ * Thin by design: the prompt lives in shared/clipPrompt.ts and the call in
+ * shared/openrouter.ts, because the API process needs both for the
+ * recommendation chat. All that is left here is binding the worker's env to
+ * them, which is exactly the part the API must not share.
  *
- * Nothing returned here is trusted: see ranges.ts.
+ * Nothing returned here is trusted: see shared/clipRanges.ts.
  */
-import { z } from 'zod'
 import { env } from '../env.ts'
-import type { TranscriptSegment } from '../../../shared/schema.ts'
-import type { Candidate } from '../ranges.ts'
-import { buildAnalyzePrompt, extractJson, type PromptOptions } from '../parse.ts'
-
-const responseSchema = z.object({
-  clips: z
-    .array(
-      z.object({
-        title: z.string(),
-        start: z.number(),
-        end: z.number(),
-        score: z.number(),
-        snippet: z.string().optional().default(''),
-        caption: z.string().optional().default(''),
-        line: z.string().optional().default(''),
-      }),
-    )
-    .default([]),
-})
-
-const jsonSchema = {
-  type: 'object',
-  properties: {
-    clips: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          title: { type: 'string', description: 'Punchy headline for the moment, max 60 chars' },
-          start: { type: 'number', description: 'Start time in seconds' },
-          end: { type: 'number', description: 'End time in seconds' },
-          score: { type: 'number', description: 'Hook strength 0-100' },
-          snippet: { type: 'string', description: 'Short transcript excerpt from the moment' },
-          caption: { type: 'string', description: 'Suggested social caption, one sentence' },
-          line: { type: 'string', description: 'The single most quotable phrase, max 40 chars' },
-        },
-        required: ['title', 'start', 'end', 'score', 'snippet', 'caption', 'line'],
-        additionalProperties: false,
-      },
-    },
-  },
-  required: ['clips'],
-  additionalProperties: false,
-} as const
+import type { Candidate } from '../../../shared/clipRanges.ts'
+import { buildAnalyzePrompt, type PromptOptions } from '../../../shared/clipPrompt.ts'
+import { requestClips } from '../../../shared/openrouter.ts'
 
 /** Everything buildAnalyzePrompt needs, plus the one field only the call uses. */
 export interface AnalyzeOptions extends PromptOptions {
@@ -62,50 +19,13 @@ export interface AnalyzeOptions extends PromptOptions {
 }
 
 export async function analyze(opts: AnalyzeOptions): Promise<Candidate[]> {
-  const prompt = buildAnalyzePrompt(opts)
-
-  const res = await fetch(`${env.OPENROUTER_BASE_URL}/chat/completions`, {
-    method: 'POST',
+  return requestClips({
+    prompt: buildAnalyzePrompt(opts),
     signal: opts.signal,
-    headers: {
-      Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
-      'Content-Type': 'application/json',
-      'X-Title': 'clip-pipeline',
-    },
-    body: JSON.stringify({
+    config: {
+      apiKey: env.OPENROUTER_API_KEY,
+      baseUrl: env.OPENROUTER_BASE_URL,
       model: env.OPENROUTER_MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.4,
-      response_format: {
-        type: 'json_schema',
-        json_schema: { name: 'clips', strict: true, schema: jsonSchema },
-      },
-    }),
+    },
   })
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(`OpenRouter returned ${res.status}: ${body.slice(0, 300)}`)
-  }
-
-  const payload = (await res.json()) as any
-  const content = payload?.choices?.[0]?.message?.content
-  if (typeof content !== 'string' || !content.trim()) {
-    throw new Error('OpenRouter returned an empty response.')
-  }
-
-  const parsed = responseSchema.safeParse(JSON.parse(extractJson(content)))
-  if (!parsed.success) {
-    throw new Error(`OpenRouter returned unusable JSON: ${parsed.error.issues[0]?.message}`)
-  }
-
-  return parsed.data.clips.map((c) => ({
-    title: c.title,
-    start: c.start,
-    end: c.end,
-    score: c.score,
-    snippet: c.snippet,
-    caption: c.caption,
-    line: c.line,
-  }))
 }

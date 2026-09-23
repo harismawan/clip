@@ -120,16 +120,25 @@ export const authSessionRoutes = new Hono()
 /**
  * The signed-in user, plus the feature flags the UI cannot work out for itself.
  *
- * `editorEnabled` rides along here rather than on a /config route of its own
- * because the app already makes this call once at boot, and the frontend is a
- * static build with no way to read the server's environment. One variable on
- * the server therefore drives both the hidden button and the 404 behind it.
+ * These ride along here rather than on a /config route of their own because the
+ * app already makes this call once at boot, and the frontend is a static build
+ * with no way to read the server's environment. One variable on the server
+ * therefore drives both the hidden control and the 404 behind it.
  *
- * If more flags follow, move them to their own endpoint -- this is one field's
- * worth of pragmatism, not a pattern.
+ * This used to be a bare `editorEnabled` field, with a note that a second flag
+ * should move them to their own endpoint. The second flag arrived. They are a
+ * nested object instead: the note's concern was a widening row of sibling
+ * booleans mixed in with user columns, and naming them as one thing settles
+ * that without adding a second boot round-trip to fetch two booleans.
  */
 authSessionRoutes.get('/me', (c) =>
-  c.json({ ...c.get('user'), editorEnabled: env.EDITOR_ENABLED }),
+  c.json({
+    ...c.get('user'),
+    features: {
+      editor: env.EDITOR_ENABLED,
+      recommendations: env.RECOMMENDATIONS_ENABLED,
+    },
+  }),
 )
 
 authSessionRoutes.post('/logout', async (c) => {

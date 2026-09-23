@@ -11,6 +11,7 @@ import { ensureListening } from './events.ts'
 import { warnAboutStorage } from './s3.ts'
 import { sources } from './routes/sources.ts'
 import { jobsRoutes } from './routes/jobs.ts'
+import { recommendationRoutes } from './routes/recommendations.ts'
 import { clipsRoutes, downloadsRoutes } from './routes/clips.ts'
 import { mediaRoutes } from './routes/media.ts'
 import { pool } from './db/index.ts'
@@ -62,6 +63,7 @@ app.use('/api/*', requireSession(lookupSession))
 app.route('/api/auth', authSessionRoutes)
 app.route('/api/sources', sources)
 app.route('/api/jobs', jobsRoutes)
+app.route('/api/jobs', recommendationRoutes)
 app.route('/api/projects', jobsRoutes) // GET / lists completed jobs
 app.route('/api/clips', clipsRoutes)
 app.route('/api/downloads', downloadsRoutes)

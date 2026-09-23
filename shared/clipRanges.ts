@@ -8,8 +8,8 @@
  *
  * Pure functions, no I/O: this is the part of the pipeline worth unit testing.
  */
-import type { TranscriptSegment } from '../../shared/schema.ts'
-import { LENGTH_PRESETS } from '../../shared/types.ts'
+import type { TranscriptSegment } from './schema.ts'
+import { LENGTH_PRESETS } from './types.ts'
 
 export interface Candidate {
   title: string
@@ -136,9 +136,27 @@ function dropOverlaps(candidates: Candidate[]): Candidate[] {
   return kept.sort((a, b) => b.score - a.score)
 }
 
+/** A stretch of source. Candidate satisfies this; so does a clip row. */
+export interface Range {
+  start: number
+  end: number
+}
+
 /** Any shared time at all counts as an overlap. */
-function overlaps(a: Candidate, b: Candidate): boolean {
+export function overlaps(a: Range, b: Range): boolean {
   return a.start < b.end && b.start < a.end
+}
+
+/**
+ * Whether a range collides with any of a set.
+ *
+ * dropOverlaps only dedupes candidates against each other -- it cannot see
+ * ranges that are not in the list it was handed. Recommendations need exactly
+ * that: a suggestion must also avoid the clips the user already has, which by
+ * definition are not candidates.
+ */
+export function overlapsAny(r: Range, others: Range[]): boolean {
+  return others.some((o) => overlaps(r, o))
 }
 
 function snapToSegmentStart(segments: TranscriptSegment[], t: number): number {

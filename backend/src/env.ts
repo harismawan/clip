@@ -50,6 +50,32 @@ const schema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
   /**
+   * Clip recommendations: the suggested-moments list on the results screen and
+   * the chat that regenerates it. Same two halves as EDITOR_ENABLED -- it hides
+   * the panel AND 404s the routes behind it.
+   *
+   * DEFAULTS TO TRUE, unlike EDITOR_ENABLED. The two flags exist for opposite
+   * reasons: that one is off while its feature is reworked and must not come
+   * back by forgetting, this one is an off switch for a feature that is meant
+   * to be on -- the lever to pull if the model bill needs stopping.
+   */
+  RECOMMENDATIONS_ENABLED: z
+    .string()
+    .default('true')
+    .transform((v) => v !== 'false'),
+  /**
+   * The API talks to OpenRouter for one thing only: the recommendation chat.
+   *
+   * It is a duplicate of the worker's config rather than a shared secret store
+   * because the two processes deploy separately and either may run without the
+   * other. The key is optional here, and only here -- the worker cannot pick
+   * clips without it, whereas the API just refuses one feature. See
+   * recommendationConfig below for where that refusal is turned into a 503.
+   */
+  OPENROUTER_API_KEY: z.string().default(''),
+  OPENROUTER_BASE_URL: z.string().default('https://openrouter.ai/api/v1'),
+  OPENROUTER_MODEL: z.string().default('google/gemini-2.5-flash'),
+  /**
    * Publicly reachable origin of this API. Not the same as HOST:PORT when nginx
    * terminates TLS in front; signed media URLs are built against it, so getting
    * it wrong yields links the browser cannot reach.
@@ -89,3 +115,18 @@ export const corsOrigins = env.CORS_ORIGIN.split(',').map((s) => s.trim())
  * Google Cloud Console entry for GOOGLE_CLIENT_ID.
  */
 export const oauthRedirectUri = `${env.PUBLIC_API_URL.replace(/\/$/, '')}/api/auth/google/callback`
+
+/**
+ * OpenRouter settings for the recommendation chat, or null when there is no key.
+ *
+ * Null rather than a boot failure: a missing key disables one panel, and taking
+ * the whole API down for it would be a worse outage than the one it prevents.
+ * The routes turn null into a 503 with something a user can act on.
+ */
+export const recommendationConfig = env.OPENROUTER_API_KEY
+  ? {
+      apiKey: env.OPENROUTER_API_KEY,
+      baseUrl: env.OPENROUTER_BASE_URL,
+      model: env.OPENROUTER_MODEL,
+    }
+  : null

@@ -1,6 +1,6 @@
 import { test, expect, describe } from 'bun:test'
-import { validateRanges, textInRange, type Candidate } from './ranges.ts'
-import type { TranscriptSegment } from '../../shared/schema.ts'
+import { validateRanges, textInRange, type Candidate } from './clipRanges.ts'
+import type { TranscriptSegment } from './schema.ts'
 
 /** 200 segments of 5s each = a 1000s source with clean 5s boundaries. */
 const segments: TranscriptSegment[] = Array.from({ length: 200 }, (_, i) => ({

@@ -430,6 +430,59 @@ export const renders = pgTable(
   (t) => [index('renders_clip_idx').on(t.clipId)],
 )
 
+/**
+ * One exchange in a project's "find me other moments" conversation.
+ *
+ * The chat history IS this table ordered by createdAt, and the list the user
+ * currently sees is the newest row's `candidates`. A separate messages table
+ * would hold one row per round carrying one nullable string, joined back to the
+ * round it already belongs to.
+ *
+ * No userId: ownership resolves through jobId -> jobs.userId, the single owner
+ * column every check in the API goes through.
+ *
+ * No "was this turned into a clip" column either. The results screen already
+ * loads the job's clips, so that question is an overlap test answered where it
+ * is asked -- a column would be a second copy of a fact, free to drift from the
+ * first.
+ */
+export const recommendationRounds = pgTable(
+  'recommendation_rounds',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    jobId: uuid('job_id')
+      .notNull()
+      .references(() => jobs.id, { onDelete: 'cascade' }),
+    /**
+     * What the user asked for, or NULL for the opening round.
+     *
+     * NULL is not "they said nothing": it marks the round that came free from
+     * the analyse stage's surplus, which no one asked for. The UI needs to tell
+     * the two apart to know whether to draw a chat bubble.
+     */
+    userMessage: text('user_message'),
+    /** Validated ranges, same shape the analyse stage produces. */
+    candidates: jsonb('candidates').$type<RecommendedCandidate[]>().notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('recommendation_rounds_job_idx').on(t.jobId)],
+)
+
+/**
+ * Structurally identical to Candidate in clipRanges.ts, declared here so the
+ * schema does not import the validator. Kept in step by the insert site, which
+ * writes Candidate values straight into this column.
+ */
+export interface RecommendedCandidate {
+  title: string
+  start: number
+  end: number
+  score: number
+  snippet: string
+  caption: string
+  line: string
+}
+
 /** One whisper segment. Times are seconds from the start of the source. */
 export interface TranscriptSegment {
   start: number
@@ -444,3 +497,4 @@ export type Job = typeof jobs.$inferSelect
 export type Transcript = typeof transcripts.$inferSelect
 export type Clip = typeof clips.$inferSelect
 export type Render = typeof renders.$inferSelect
+export type RecommendationRound = typeof recommendationRounds.$inferSelect
