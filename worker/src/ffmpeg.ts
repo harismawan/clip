@@ -195,20 +195,7 @@ export async function reframeStatic(
   subtitlePath?: string,
 ): Promise<string> {
   const { width, height } = await probeDimensions(input)
-
-  // Crop the widest region matching the target aspect, then scale to size.
-  let cropW = Math.round((height * outW) / outH)
-  cropW += cropW % 2
-  cropW = Math.min(cropW, width)
-  let cropH = height
-  if (cropW > width) {
-    cropW = width
-    cropH = Math.round((width * outH) / outW)
-    cropH += cropH % 2
-    cropH = Math.min(cropH, height)
-  }
-  const x = Math.max(0, Math.round((width - cropW) / 2))
-  const y = Math.max(0, Math.round((height - cropH) / 2))
+  const { w: cropW, h: cropH, x, y } = centreCrop(width, height, outW, outH)
 
   const chain = [`crop=${cropW}:${cropH}:${x}:${y}`, `scale=${outW}:${outH}`]
   // Subtitles go AFTER scale: the ASS declares PlayRes equal to the output
@@ -248,6 +235,28 @@ export async function reframeStatic(
     output,
   ])
   return output
+}
+
+/**
+ * Largest centred box of the target aspect that fits the source.
+ *
+ * Full height when the source is wider than the target, full width otherwise --
+ * a portrait source going to 16:9 has to lose rows, not get stretched.
+ */
+export function centreCrop(width: number, height: number, outW: number, outH: number) {
+  const even = (n: number) => n + (n % 2)
+  let w = even(Math.round((height * outW) / outH))
+  let h = height
+  if (w > width) {
+    w = width
+    h = Math.min(even(Math.round((width * outH) / outW)), height)
+  }
+  return {
+    w,
+    h,
+    x: Math.max(0, Math.round((width - w) / 2)),
+    y: Math.max(0, Math.round((height - h) / 2)),
+  }
 }
 
 /**
