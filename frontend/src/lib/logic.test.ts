@@ -1,5 +1,13 @@
 import { beforeEach, expect, test } from 'bun:test'
-import { clampTrim, firstEnabled, mergeJob, needsCatchUp, restored } from '../state/useSnipline'
+import {
+  clampTrim,
+  firstEnabled,
+  mergeJob,
+  needsCatchUp,
+  pathFor,
+  publicScreen,
+  restored,
+} from '../state/useSnipline'
 import type { SnipState } from '../state/useSnipline'
 import type { JobSnapshot } from './api'
 import { ago } from './format'
@@ -157,6 +165,32 @@ test('restored sends the editor back to the grid', () => {
   // The editor needs one clip in particular, which isn't persisted.
   saved({ screen: 'editor' })
   expect(restored().screen).toBe('results')
+})
+
+test('restored never brings back a public page', () => {
+  // Landing and sign-in are decided by the session, not by last time: restoring
+  // either would show a signed-in user the front page, or a visitor the app.
+  for (const screen of ['landing', 'login'] as const) {
+    saved({ screen })
+    expect(restored().screen).toBeUndefined()
+  }
+})
+
+test('a visitor gets the landing at / and sign-in at /login', () => {
+  expect(publicScreen('/')).toBe('landing')
+  expect(publicScreen('/login')).toBe('login')
+  // A trailing slash is the same page, not a stranger's landing.
+  expect(publicScreen('/login/')).toBe('login')
+  // Anything else a visitor types falls through to the front page.
+  expect(publicScreen('/pricing')).toBe('landing')
+  expect(publicScreen('')).toBe('landing')
+})
+
+test('only sign-in has its own path; everything signed-in stays at /', () => {
+  expect(pathFor('login')).toBe('/login')
+  for (const screen of ['landing', 'projects', 'results', 'new', 'settings'] as const) {
+    expect(pathFor(screen)).toBe('/')
+  }
 })
 
 test('restored survives storage that is junk or unavailable', () => {

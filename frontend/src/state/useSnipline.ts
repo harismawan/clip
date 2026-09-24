@@ -340,12 +340,30 @@ export function mergeJob(s: SnipState, job: JobSnapshot): SnipState {
   }
 }
 
+/**
+ * Where a visitor (no session) belongs, read from the address bar.
+ *
+ * The app had no URLs before the landing page: every screen lived at /. Now the
+ * two public screens have paths -- the landing at /, sign-in at /login -- while
+ * everything behind sign-in still lives at /, so no signed-in URL changed.
+ */
+export function publicScreen(pathname: string): Screen {
+  return pathname.replace(/\/+$/, '') === '/login' ? 'login' : 'landing'
+}
+
+/** The path a screen shows in the address bar. */
+export function pathFor(screen: Screen): string {
+  return screen === 'login' ? '/login' : '/'
+}
+
 /** Reopen where we left off. Clips are re-fetched, never restored from storage. */
 export function restored(): Partial<SnipState> {
   const slice = loadPersisted()
   // Neither is a place to come back to: 'booting' would never resolve without a
   // second /me, and 'login' is decided by the session, not by last time.
-  if (slice.screen === 'booting' || slice.screen === 'login') delete slice.screen
+  if (slice.screen === 'booting' || slice.screen === 'login' || slice.screen === 'landing') {
+    delete slice.screen
+  }
   // The editor needs one clip in particular; come back to the grid instead.
   if (slice.screen === 'editor') slice.screen = 'results'
   // Without a job to re-fetch, the clip screens would come back empty.
@@ -405,6 +423,44 @@ export function useSnipline() {
     state.recsOpen,
   ])
 
+  /**
+   * Keep the address bar in step with the screen: /login for sign-in, / for
+   * everything else.
+   *
+   * replaceState, not push. This corrects the URL after the fact -- a signed-in
+   * user who opens /login lands in the app, and the address should stop saying
+   * /login -- which is not a step anyone should be able to go Back to. The one
+   * deliberate navigation, landing -> sign-in, pushes in goLogin instead.
+   *
+   * Not while booting: the screen is undecided, and "correcting" to / would
+   * throw away a /login?error=... that the sign-in callback just sent.
+   */
+  useEffect(() => {
+    if (state.screen === 'booting') return
+    const want = pathFor(state.screen)
+    if (window.location.pathname !== want) window.history.replaceState(null, '', want)
+  }, [state.screen])
+
+  // Back and Forward between the two public pages. A signed-in user stays put:
+  // everything behind sign-in is one URL, so there is nothing to go back to.
+  useEffect(() => {
+    const onPop = () =>
+      setState((s) => (s.user ? s : { ...s, screen: publicScreen(window.location.pathname) }))
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
+
+  /** Landing -> sign-in. Pushed, so Back returns to the landing page. */
+  const goLogin = useCallback(() => {
+    window.history.pushState(null, '', '/login')
+    setState((s) => ({ ...s, screen: 'login' }))
+  }, [])
+
+  const goLanding = useCallback(() => {
+    window.history.pushState(null, '', '/')
+    setState((s) => ({ ...s, screen: 'landing' }))
+  }, [])
+
   const say = useCallback((toast: string) => {
     if (toastTimer.current) clearTimeout(toastTimer.current)
     setState((s) => ({ ...s, toast }))
@@ -439,7 +495,7 @@ export function useSnipline() {
         const me = await auth.me()
         if (cancelled) return
         if (!me) {
-          patch({ user: null, screen: 'login' })
+          patch({ user: null, screen: publicScreen(window.location.pathname) })
           return
         }
         patch({ user: me, screen: restoredSlice.screen ?? 'new' })
@@ -473,10 +529,11 @@ export function useSnipline() {
           await refreshJob(restoredSlice.jobId)
         }
       } catch {
-        // The API is unreachable. The login screen is the honest place to land:
-        // nothing else in the app can work either.
+        // The API is unreachable. A visitor still gets the page they asked for:
+        // the landing page needs no server, and sign-in will say it cannot
+        // reach it when tried. Nothing behind sign-in can work either way.
         if (cancelled) return
-        patch({ user: null, screen: 'login' })
+        patch({ user: null, screen: publicScreen(window.location.pathname) })
         say('Could not reach the server.')
       }
     })()
@@ -771,7 +828,8 @@ export function useSnipline() {
       // Already gone, or the API is down: clear the client either way.
     })
     patch({
-      screen: 'login',
+      // Back to the front page, not the sign-in form: signing out is leaving.
+      screen: 'landing',
       user: null,
       clips: [],
       progress: 0,
@@ -1334,6 +1392,8 @@ export function useSnipline() {
     refreshJob,
     signIn,
     signOut,
+    goLogin,
+    goLanding,
     goNew,
     goResults,
     openProject,

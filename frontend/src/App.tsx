@@ -3,6 +3,7 @@ import { AppShell } from './components/AppShell'
 import { ClipPlayer } from './components/ClipPlayer'
 import { Toast } from './components/Toast'
 import { EditorScreen } from './screens/EditorScreen'
+import { LandingScreen } from './screens/LandingScreen'
 import { LoginScreen } from './screens/LoginScreen'
 import { NewVideoScreen } from './screens/NewVideoScreen'
 import { PlanScreen } from './screens/PlanScreen'
@@ -45,6 +46,7 @@ export default function App() {
           showing either the login screen or the app would be a guess that flashes
           when it turns out wrong.
         */}
+        {state.screen === 'landing' && <LandingScreen />}
         {state.screen === 'login' && <LoginScreen />}
         {/*
           Gated as well as unreachable: openEditor refuses to set this screen

@@ -59,24 +59,24 @@ maybe('a callback with a forged state is refused without contacting Google', asy
     headers: { Cookie: 'oauth_state=the-real-one; oauth_verifier=v' },
   })
   expect(res.status).toBe(302)
-  expect(res.headers.get('location')).toBe('/?error=state')
+  expect(res.headers.get('location')).toBe('/login?error=state')
 })
 
 maybe('a callback with no state cookie is refused, not treated as a match', async () => {
   const res = await authRoutes.request('/google/callback?code=abc&state=')
-  expect(res.headers.get('location')).toBe('/?error=state')
+  expect(res.headers.get('location')).toBe('/login?error=state')
 })
 
 maybe('a callback with no code is refused', async () => {
   const res = await authRoutes.request('/google/callback?state=s', {
     headers: { Cookie: 'oauth_state=s; oauth_verifier=v' },
   })
-  expect(res.headers.get('location')).toBe('/?error=code')
+  expect(res.headers.get('location')).toBe('/login?error=code')
 })
 
 maybe('a callback carrying Google\'s own error is passed through to the UI', async () => {
   const res = await authRoutes.request('/google/callback?error=access_denied')
-  expect(res.headers.get('location')).toBe('/?error=denied')
+  expect(res.headers.get('location')).toBe('/login?error=denied')
 })
 
 maybe('the handshake cookies are cleared once the callback has read them', async () => {
