@@ -6,6 +6,7 @@
 import pg from 'pg'
 import { env } from './env.ts'
 import { NOTIFY_CHANNEL, decodeProgress } from '../../shared/progress.ts'
+import { API_APP_NAME } from '../../shared/queue.ts'
 import type { ProgressEvent } from '../../shared/types.ts'
 
 type Listener = (e: ProgressEvent) => void
@@ -15,7 +16,7 @@ let client: pg.Client | null = null
 let connecting: Promise<void> | null = null
 
 async function connect(): Promise<void> {
-  const c = new pg.Client({ connectionString: env.DATABASE_URL })
+  const c = new pg.Client({ connectionString: env.DATABASE_URL, application_name: API_APP_NAME })
 
   c.on('notification', (msg) => {
     if (msg.channel !== NOTIFY_CHANNEL || !msg.payload) return

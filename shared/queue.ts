@@ -55,9 +55,31 @@ export interface SourceJobPayload {
   jobId: string
 }
 
-export function makeBoss(connectionString: string) {
+/**
+ * What each process calls itself on its database connections.
+ *
+ * Postgres shows this as pg_stat_activity.application_name, which is the only
+ * view that sees EVERY worker, wherever it runs -- pm2 here, a container, or a
+ * laptop through an SSH tunnel. Before this, a worker's connections were
+ * labelled `pgboss` or nothing at all, indistinguishable from the API's, and a
+ * dev worker tunnelled into production went unnoticed while it claimed jobs and
+ * undid cancels. scripts/workers.sh reads these names; keep the prefix in step.
+ *
+ * Postgres truncates past 63 bytes, so this does too rather than let it clip
+ * the pid off the end.
+ */
+export const API_APP_NAME = 'clip-api'
+export const WORKER_APP_PREFIX = 'clip-worker'
+
+export function workerAppName(hostId: string, pid = process.pid): string {
+  const tail = `:${pid}`
+  return `${WORKER_APP_PREFIX}:${hostId}`.slice(0, 63 - tail.length) + tail
+}
+
+export function makeBoss(connectionString: string, applicationName: string) {
   return new PgBoss({
     connectionString,
+    application_name: applicationName,
     // Finished jobs stay queryable for a week before moving to pgboss.archive --
     // long enough to debug a failure from the weekend.
     archiveCompletedAfterSeconds: 60 * 60 * 24 * 7,

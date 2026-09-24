@@ -8,6 +8,7 @@
 import { mkdir } from 'node:fs/promises'
 import {
   makeBoss,
+  workerAppName,
   PROCESS_QUEUE,
   RECUT_QUEUE,
   BACKFILL_QUEUE,
@@ -27,7 +28,7 @@ import { reclaimSourceLeases, sourcesDir } from './sourceCache.ts'
 import { reconcileOnBoot } from './reconcile.ts'
 import { assertEncoderAvailable } from './ffmpeg.ts'
 
-const boss = makeBoss(env.DATABASE_URL)
+const boss = makeBoss(env.DATABASE_URL, workerAppName(env.WORKER_HOST_ID))
 
 boss.on('error', (err) => console.error('[boss]', err))
 

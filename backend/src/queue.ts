@@ -1,5 +1,6 @@
 import {
   makeBoss,
+  API_APP_NAME,
   PROCESS_QUEUE,
   RECUT_QUEUE,
   BACKFILL_QUEUE,
@@ -14,7 +15,7 @@ import type {
 } from '../../shared/queue.ts'
 import { env } from './env.ts'
 
-export const boss = makeBoss(env.DATABASE_URL)
+export const boss = makeBoss(env.DATABASE_URL, API_APP_NAME)
 
 let started = false
 
