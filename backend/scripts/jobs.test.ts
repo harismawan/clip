@@ -6,7 +6,7 @@
  * at all (it ends up in a LIKE pattern, parameterised or not).
  */
 import { test, expect, describe } from 'bun:test'
-import { parseArgs } from './jobs.ts'
+import { parseArgs, userMatch } from './jobs.ts'
 
 describe('parseArgs', () => {
   test('lists by default', () => {
@@ -48,5 +48,43 @@ describe('parseArgs', () => {
   test('unknown commands are errors', () => {
     expect(() => parseArgs(['stop', 'c397ca27'])).toThrow(/Unknown command stop/)
     expect(() => parseArgs(['list', 'extra'])).toThrow(/Unexpected extra/)
+  })
+})
+
+describe('--user', () => {
+  test('filters the list, with or without the word list', () => {
+    expect(parseArgs(['--user', 'achmad'])).toEqual({ cmd: 'list', user: 'achmad' })
+    expect(parseArgs(['list', '--user', 'achmad'])).toEqual({ cmd: 'list', user: 'achmad' })
+    expect(parseArgs(['--user=a@b.c'])).toEqual({ cmd: 'list', user: 'a@b.c' })
+  })
+
+  test('needs a value', () => {
+    expect(() => parseArgs(['--user'])).toThrow(/--user needs/)
+    expect(() => parseArgs(['--user='])).toThrow(/--user needs/)
+    expect(() => parseArgs(['--user', '  '])).toThrow(/--user needs/)
+  })
+
+  test('is a listing filter only', () => {
+    expect(() => parseArgs(['cancel', 'c397ca27', '--user', 'x'])).toThrow(/--user/)
+  })
+})
+
+describe('userMatch', () => {
+  test('a full uuid is an exact user id', () => {
+    expect(userMatch('5EA609D2-EAFF-48C4-BC29-22AAF14A8283')).toEqual({
+      id: '5ea609d2-eaff-48c4-bc29-22aaf14a8283',
+    })
+  })
+
+  test('anything else is part of an email', () => {
+    expect(userMatch('achmad')).toEqual({ emailLike: '%achmad%' })
+    // A uuid prefix is not a user id -- too easy to widen by accident.
+    expect(userMatch('5ea609d2')).toEqual({ emailLike: '%5ea609d2%' })
+  })
+
+  /** `_` is a LIKE wildcard and an ordinary email character. */
+  test('escapes LIKE wildcards so they match literally', () => {
+    expect(userMatch('a_b')).toEqual({ emailLike: '%a\\_b%' })
+    expect(userMatch('100%')).toEqual({ emailLike: '%100\\%%' })
   })
 })
