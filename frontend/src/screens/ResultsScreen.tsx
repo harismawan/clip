@@ -1,5 +1,6 @@
 import { Button } from '../components/Button'
 import { Chip } from '../components/Chip'
+import { LazyImage } from '../components/LazyImage'
 import { ShareClip } from '../components/ShareClip'
 import { MomentsToggle, RecommendationPanel } from '../components/RecommendationPanel'
 import { FEATURES } from '../config'
@@ -51,10 +52,10 @@ export function ResultsScreen() {
         */}
         <div className="flex flex-none flex-wrap items-start gap-x-4 gap-y-3 px-5 pt-5 sm:px-[26px]">
           {src?.thumbnailUrl ? (
-            <img
+            <LazyImage
               src={src.thumbnailUrl}
-              alt=""
-              className="w-[104px] flex-none rounded-[7px] object-cover"
+              fallbackClassName="hatch-sand"
+              className="w-[104px] flex-none rounded-[7px]"
               style={{ aspectRatio: '16/9' }}
             />
           ) : (
@@ -134,24 +135,14 @@ export function ResultsScreen() {
                     style={{ aspectRatio: ratio }}
                   >
                     {/*
-                      A real <img> rather than a CSS background, for three reasons:
-                      onError can fall back (a background that 404s leaves a blank
-                      white card with no hint why), loading="lazy" matters at 24
-                      clips, and it gets alt text. The hatch sits underneath, so
-                      hiding a broken image reveals the placeholder again.
+                      A real <img> rather than a CSS background: it can pulse
+                      while loading and fall back when it fails (a background
+                      that 404s leaves a blank card with no hint why), it loads
+                      lazily across 24 clips, and it takes alt text. No fallback
+                      class: a failed thumbnail simply shows the hatch that the
+                      card already has underneath.
                     */}
-                    {thumb && (
-                      <img
-                        src={thumb}
-                        alt=""
-                        loading="lazy"
-                        decoding="async"
-                        onError={(e) => {
-                          e.currentTarget.style.display = 'none'
-                        }}
-                        className="absolute inset-0 z-0 size-full object-cover"
-                      />
-                    )}
+                    {thumb && <LazyImage src={thumb} className="absolute inset-0 z-0" />}
 
                     <span className="relative z-10 flex items-start justify-between gap-1.5">
                       {FEATURES.showHookScore && (
