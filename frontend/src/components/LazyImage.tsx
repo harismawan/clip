@@ -55,7 +55,13 @@ export function LazyImage({
   return (
     <span
       className={cn(
-        'relative block overflow-hidden',
+        // No `position` here, deliberately. Callers pass `absolute inset-0` to
+        // lay the image behind a card's overlays, and cn() only joins classes --
+        // it does not resolve conflicts -- so a `relative` here beat the caller's
+        // `absolute` and dropped the image into the card's flow, pushing the
+        // hook badge and checkbox below it. The image is in normal flow inside
+        // this box, so the box never needed to be positioned.
+        'block overflow-hidden',
         status === 'loading' && 'bg-black/[0.07] motion-safe:animate-pulse',
         status === 'failed' && fallbackClassName,
         className,
