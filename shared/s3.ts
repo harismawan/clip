@@ -9,6 +9,7 @@ import {
   S3Client,
   PutObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   DeleteObjectsCommand,
 } from '@aws-sdk/client-s3'
 
@@ -34,13 +35,14 @@ export function makeS3(cfg: S3Config) {
     client,
     bucket: cfg.bucket,
 
-    async upload(key: string, body: Uint8Array | Buffer, contentType: string) {
+    async upload(key: string, body: Uint8Array | Buffer | NodeJS.ReadableStream, contentType: string, contentLength?: number) {
       await client.send(
         new PutObjectCommand({
           Bucket: cfg.bucket,
           Key: key,
           Body: body,
           ContentType: contentType,
+          ContentLength: contentLength,
         }),
       )
       return key
@@ -52,6 +54,15 @@ export function makeS3(cfg: S3Config) {
       return getSignedUrl(client, new GetObjectCommand({ Bucket: cfg.bucket, Key: key }), {
         expiresIn,
       })
+    },
+
+    async exists(key: string): Promise<boolean> {
+      try {
+        await client.send(new HeadObjectCommand({ Bucket: cfg.bucket, Key: key }))
+        return true
+      } catch {
+        return false
+      }
     },
 
     /**
@@ -105,4 +116,6 @@ export const keys = {
    */
   sourceProxy: (videoId: string) => `videos/${videoId}/proxy.mp4`,
   sourceStrip: (videoId: string) => `videos/${videoId}/strip.jpg`,
+  /** Full source video download, cached in S3 for any worker to reuse. */
+  sourceVideo: (videoId: string) => `videos/${videoId}/source.mp4`,
 }
