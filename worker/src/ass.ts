@@ -41,6 +41,22 @@ export interface AssOptions {
  */
 const AVG_ADVANCE_EM = 0.6
 
+/**
+ * Where the burned-in text sits and how big it is, as fractions of the frame
+ * height. The two knobs to turn if the look needs tuning.
+ *
+ * Just below the middle, not at the foot of the frame. The bottom band is where
+ * TikTok and Reels draw their own caption, handle and buttons, so text there is
+ * half-covered once posted; the dead centre is usually the speaker's face.
+ * Anchored by its bottom edge (alignment 2) and lifted SUBTITLE_LIFT of the
+ * height, so a two-line cue grows UP toward the middle, never down into that UI
+ * band. At 9:16 that puts a two-line cue across roughly 55-62% of the height.
+ *
+ * Size was 4.5% and sat 12% up from the bottom; asked for higher and smaller.
+ */
+export const SUBTITLE_SIZE = 0.035
+export const SUBTITLE_LIFT = 0.38
+
 /** How many characters fit across the frame at this font size. */
 export function maxCharsPerLineFor(outWidth: number, fontSize: number, marginH: number): number {
   const usable = outWidth - 2 * marginH
@@ -89,10 +105,9 @@ export function buildClipAss(
 
   if (cues.length === 0) return ''
 
-  // ~4.5% of frame height reads correctly on a phone without dominating it.
-  const fontSize = Math.round(outHeight * 0.045)
+  const fontSize = Math.round(outHeight * SUBTITLE_SIZE)
   const outline = Math.max(2, Math.round(fontSize * 0.12))
-  const marginV = Math.round(outHeight * 0.12)
+  const marginV = Math.round(outHeight * SUBTITLE_LIFT)
   const marginH = Math.round(outWidth * 0.06)
   const maxChars = opts.maxCharsPerLine ?? maxCharsPerLineFor(outWidth, fontSize, marginH)
 

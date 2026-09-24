@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test'
-import { buildClipAss, assTime, maxCharsPerLineFor } from './ass.ts'
+import { buildClipAss, assTime, maxCharsPerLineFor, SUBTITLE_SIZE, SUBTITLE_LIFT } from './ass.ts'
 import type { TranscriptSegment } from '../../shared/schema.ts'
 
 const segs: TranscriptSegment[] = [
@@ -32,11 +32,13 @@ describe('buildClipAss', () => {
    * for an SRT. That scaled the font by 1920/288 = 6.67x and pushed a
    * bottom-aligned cue off the top of the frame.
    */
-  test('keeps font size at ~4.5% of the declared PlayResY', () => {
+  test('keeps font size at SUBTITLE_SIZE of the declared PlayResY', () => {
     const ass = buildClipAss(segs, 10, 14, 1080, 1920)
     const style = ass.split('\n').find((l) => l.startsWith('Style: '))!
     const fontSize = Number(style.split(',')[2])
-    expect(fontSize / 1920).toBeCloseTo(0.045, 3)
+    expect(fontSize / 1920).toBeCloseTo(SUBTITLE_SIZE, 3)
+    // Smaller than the old 4.5%, which read as too big on a phone.
+    expect(fontSize).toBeLessThan(Math.round(1920 * 0.045))
   })
 
   test('scales font with output height so 1:1 is not styled like 9:16', () => {
@@ -49,12 +51,29 @@ describe('buildClipAss', () => {
     expect(size(1920)).toBeGreaterThan(size(1080))
   })
 
-  test('bottom-centres the text', () => {
+  test('anchors the text by its bottom edge, so extra lines grow upward', () => {
     const style = buildClipAss(segs, 10, 14, 1080, 1920)
       .split('\n')
       .find((l) => l.startsWith('Style: '))!
     // Alignment is field 19 (1-indexed) in the V4+ Style format.
     expect(style.split(',')[18]).toBe('2')
+  })
+
+  /**
+   * Lifted to just below the middle: clear of the band at the bottom where
+   * TikTok and Reels draw their own UI, and off the usual face position.
+   */
+  test('sits just below the middle, not at the foot of the frame', () => {
+    for (const h of [1920, 1350, 1080]) {
+      const style = buildClipAss(segs, 10, 14, 1080, h)
+        .split('\n')
+        .find((l) => l.startsWith('Style: '))!
+      // MarginV is field 22: distance from the bottom edge to the text's bottom.
+      const marginV = Number(style.split(',')[21])
+      expect(marginV / h).toBeCloseTo(SUBTITLE_LIFT, 2)
+      // The text's bottom edge is below the centre line, so it never covers it.
+      expect(marginV).toBeLessThan(h / 2)
+    }
   })
 
   test('outlines the text, since white on bright video is unreadable', () => {
@@ -79,7 +98,11 @@ describe('buildClipAss', () => {
   })
 
   test('joins wrapped lines with \\N, since a raw newline ends the event', () => {
-    const ass = buildClipAss([{ start: 10, end: 13, text: 'satu dua tiga empat' }], 10, 14, 1080, 1920)
+    // An explicit width, so the test is about joining, not about which text
+    // happens to overflow at the current font size.
+    const ass = buildClipAss([{ start: 10, end: 13, text: 'satu dua tiga empat' }], 10, 14, 1080, 1920, {
+      maxCharsPerLine: 10,
+    })
     const events = ass.split('\n').filter((l) => l.startsWith('Dialogue: '))
     expect(events).toHaveLength(1)
     expect(events[0]).toContain('\\N')
