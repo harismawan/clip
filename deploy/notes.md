@@ -20,17 +20,21 @@ fails to connect with nothing reaching this box. That host is set explicitly in
 
 ```sh
 sudo certbot certonly --nginx -d clip2.mhamzah.id   # and -d diudara.mhamzah.id
+sudo certbot certonly --nginx -d clip2.id
 ```
 
 ```sh
 sudo cp nginx/clip2.mhamzah.id /etc/nginx/sites-available/clip2.mhamzah.id
+sudo cp nginx/clip2.id /etc/nginx/sites-available/clip2.id
 ```
 
 ```sh
 sudo ln -s /etc/nginx/sites-available/clip2.mhamzah.id /etc/nginx/sites-enabled/clip2.mhamzah.id
+sudo ln -s /etc/nginx/sites-available/clip2.id /etc/nginx/sites-enabled/clip2.id
 
 # remove
 sudo unlink -s /etc/nginx/sites-available/clip2.mhamzah.id /etc/nginx/sites-enabled/clip2.mhamzah.id
+sudo unlink -s /etc/nginx/sites-available/clip2.id /etc/nginx/sites-enabled/clip2.id
 ```
 
 ```sh
