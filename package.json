@@ -15,7 +15,8 @@
     "test": "bun test backend worker shared frontend",
     "typecheck": "bun x tsc -p backend/tsconfig.json --noEmit && bun x tsc -p worker/tsconfig.json --noEmit && bun x tsc -p frontend/tsconfig.app.json --noEmit",
     "queue": "./scripts/queue-watch.sh",
-    "workers": "./scripts/workers.sh"
+    "workers": "./scripts/workers.sh",
+    "jobs": "bun --env-file=.env backend/scripts/jobs.ts"
   },
   "devDependencies": {
     "typescript": "^7.0.2"
