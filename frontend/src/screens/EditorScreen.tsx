@@ -3,6 +3,8 @@ import { Button } from '../components/Button'
 import { Chip } from '../components/Chip'
 import { EditorUnavailable } from '../components/EditorUnavailable'
 import { JobIndicator } from '../components/JobIndicator'
+import { LazyImage } from '../components/LazyImage'
+import { MediaSpinner } from '../components/MediaSpinner'
 import { TrimHandle } from '../components/TrimHandle'
 import { FEATURES } from '../config'
 import { RATIOS, TIMELINE_SPAN, WAVE } from '../data/fixtures'
@@ -58,6 +60,14 @@ export function EditorScreen() {
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const [playing, setPlaying] = useState(false)
+  /**
+   * The preview URL whose metadata has arrived. Metadata, not the first frame:
+   * this video is preload="metadata" and waits for Play, so "loaded data" would
+   * never come and the spinner would never leave. Per URL, because a backfill
+   * swaps the render for the proxy under the same element.
+   */
+  const [videoReady, setVideoReady] = useState<string | null>(null)
+  const [videoStalled, setVideoStalled] = useState(false)
   /** Position on the visible timeline, 0-100. Driven by the video's own clock. */
   const [playhead, setPlayhead] = useState(0)
   const [transcript, setTranscript] = useState<TranscriptLine[] | null>(null)
@@ -374,6 +384,9 @@ export function EditorScreen() {
                 className="absolute inset-0 size-full object-cover"
                 onPlay={() => setPlaying(true)}
                 onPause={() => setPlaying(false)}
+                onLoadedMetadata={() => setVideoReady(preview.url)}
+                onWaiting={() => setVideoStalled(true)}
+                onPlaying={() => setVideoStalled(false)}
                 onTimeUpdate={(e) => {
                   const video = e.currentTarget
                   const pct = pctOf(preview.start + video.currentTime, win)
@@ -388,6 +401,9 @@ export function EditorScreen() {
                   setPlayhead(pct)
                 }}
               />
+            )}
+            {preview && (videoReady !== preview.url || videoStalled) && (
+              <MediaSpinner label={videoReady === preview.url ? 'Buffering…' : 'Loading preview…'} />
             )}
 
             {playing && (
@@ -553,11 +569,10 @@ export function EditorScreen() {
               }}
             >
               {source?.stripUrl && (
-                <img
+                <LazyImage
                   src={source.stripUrl}
-                  alt=""
                   draggable={false}
-                  className="pointer-events-none size-full object-cover opacity-45"
+                  className="pointer-events-none size-full opacity-45"
                 />
               )}
               <div className="pointer-events-none absolute right-0 bottom-0 left-0 flex h-3.5 items-end gap-px px-px opacity-60">
@@ -596,11 +611,11 @@ export function EditorScreen() {
             {manual ? (
               <div className="hatch-night size-full opacity-50" />
             ) : clip.stripUrl ? (
-              <img
+              <LazyImage
                 src={clip.stripUrl}
-                alt=""
                 draggable={false}
-                className="size-full object-cover opacity-60"
+                fallbackClassName="hatch-night"
+                className="size-full opacity-60"
               />
             ) : (
               Array.from({ length: FILMSTRIP_FRAMES }, (_, i) => (

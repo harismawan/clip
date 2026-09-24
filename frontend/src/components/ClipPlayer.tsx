@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { fmt } from '../lib/format'
+import { MediaSpinner } from './MediaSpinner'
 import type { Clip, Ratio } from '../types'
 
 /**
@@ -22,6 +23,15 @@ export function ClipPlayer({
   onClose: () => void
 }) {
   const closeRef = useRef<HTMLButtonElement>(null)
+  /**
+   * Which URL has its first frame, and which failed. Per URL rather than a
+   * boolean, because this overlay stays mounted from clip to clip: a boolean
+   * left true by the last clip would skip the spinner on the next.
+   */
+  const [ready, setReady] = useState<string | null>(null)
+  const [failed, setFailed] = useState<string | null>(null)
+  /** Playback stalled to buffer -- the same black box, so the same spinner. */
+  const [stalled, setStalled] = useState(false)
 
   // Escape closes, matching the editor screen's keyboard contract.
   useEffect(() => {
@@ -56,14 +66,47 @@ export function ClipPlayer({
         onClick={(e) => e.stopPropagation()}
       >
         {url ? (
-          <video
-            src={url}
-            controls
-            autoPlay
-            playsInline
-            className="min-h-0 max-w-full rounded-[14px] bg-black shadow-2xl"
-            style={{ maxHeight: '72vh' }}
-          />
+          /*
+            The size lives on this wrapper and the video fills it, so the
+            spinner (inset-0 of the wrapper) always covers exactly the video.
+            With the height on the video instead, a short screen shrank the
+            wrapper and left the overlay covering only the top of the picture.
+            The render's own shape from the start, too: a bare video is a
+            300x150 box until its first frame, then jumps.
+          */
+          <div
+            className="relative min-h-0 max-w-full"
+            style={{ height: '72vh', aspectRatio: ratio.replace(':', '/') }}
+          >
+            <video
+              src={url}
+              controls
+              autoPlay
+              playsInline
+              onLoadedData={() => {
+                setReady(url)
+                setStalled(false)
+              }}
+              onWaiting={() => setStalled(true)}
+              onPlaying={() => setStalled(false)}
+              onError={() => setFailed(url)}
+              className="block size-full rounded-[14px] bg-black shadow-2xl"
+            />
+            {failed === url ? (
+              <span
+                role="alert"
+                className="absolute inset-0 flex items-center justify-center rounded-[14px] bg-black/70 px-6 text-center text-[13px] text-white/85"
+              >
+                This clip would not load. Close the player and try again.
+              </span>
+            ) : (
+              (ready !== url || stalled) && (
+                <span className="absolute inset-0 overflow-hidden rounded-[14px]">
+                  <MediaSpinner label={ready === url ? 'Buffering…' : 'Loading video…'} />
+                </span>
+              )
+            )}
+          </div>
         ) : (
           <div className="rounded-[14px] bg-white px-6 py-8 text-[13px] text-muted">
             That format is not ready for this clip yet.

@@ -4,6 +4,7 @@ import { Meter } from '../components/Meter'
 import { ago } from '../lib/format'
 import { jobIndicator } from '../lib/derive'
 import { isTerminal } from '../../../shared/types'
+import { LazyImage } from '../components/LazyImage'
 import type { Project } from '../types'
 import { useApp } from '../state/AppContext'
 
@@ -142,10 +143,10 @@ export function ProjectsScreen() {
               className="flex flex-wrap items-center gap-x-3.5 gap-y-2.5 rounded-[18px] border-[1.5px] border-[rgba(23,20,18,.16)] bg-white p-[13px]"
             >
               {project.source.thumbnailUrl ? (
-                <img
+                <LazyImage
                   src={project.source.thumbnailUrl}
-                  alt=""
-                  className="w-[82px] flex-none rounded-[7px] border border-black/12 object-cover"
+                  fallbackClassName="hatch-sand"
+                  className="w-[82px] flex-none rounded-[7px] border border-black/12"
                   style={{ aspectRatio: '16/9' }}
                 />
               ) : (

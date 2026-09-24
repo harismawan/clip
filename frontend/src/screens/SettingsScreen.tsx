@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { Button } from '../components/Button'
+import { LazyImage } from '../components/LazyImage'
 import { OptionChip } from '../components/OptionChip'
 import { Toggle } from '../components/Toggle'
 import { LENGTHS, RATIOS } from '../data/fixtures'
@@ -117,11 +118,11 @@ export function SettingsScreen() {
           */}
           <Row className={cn('flex items-center gap-3', divider)}>
             {state.user?.pictureUrl ? (
-              <img
+              <LazyImage
                 src={state.user.pictureUrl}
-                alt=""
                 referrerPolicy="no-referrer"
-                className="size-[34px] flex-none rounded-full object-cover"
+                fallbackClassName="bg-sand-deeper"
+                className="size-[34px] flex-none rounded-full"
               />
             ) : (
               <div className="size-[34px] flex-none rounded-full bg-sand-deeper" />

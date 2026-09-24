@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Button } from '../components/Button'
+import { LazyImage } from '../components/LazyImage'
 import { OptionChip } from '../components/OptionChip'
 import { Toggle } from '../components/Toggle'
 import {
@@ -58,11 +59,25 @@ export function SetupScreen() {
     <div className="flex min-h-0 flex-1 items-start justify-center overflow-auto p-4 sm:p-7 md:items-center">
       <div className="animate-rise w-full max-w-[640px] overflow-hidden rounded-[22px] border-2 border-ink bg-white shadow-stamp-lg">
         <div className="flex gap-4 border-b border-black/8 p-5">
+          {/*
+            The video's own thumbnail, where there used to be only the hatch --
+            the analyse call already returns it. The hatch stays for a source
+            without one, and for one that fails to load.
+          */}
           <div
-            className="hatch-sand flex w-[150px] flex-none items-end justify-end rounded-[8px] p-[7px]"
+            className="relative w-[150px] flex-none overflow-hidden rounded-[8px]"
             style={{ aspectRatio: '16/9' }}
           >
-            <span className="rounded-[4px] bg-black/60 px-[5px] py-0.5 text-[10.5px] font-medium text-white">
+            {src.thumbnailUrl ? (
+              <LazyImage
+                src={src.thumbnailUrl}
+                fallbackClassName="hatch-sand"
+                className="absolute inset-0"
+              />
+            ) : (
+              <div className="hatch-sand absolute inset-0" />
+            )}
+            <span className="absolute right-[7px] bottom-[7px] rounded-[4px] bg-black/60 px-[5px] py-0.5 text-[10.5px] font-medium text-white">
               {src.length}
             </span>
           </div>
