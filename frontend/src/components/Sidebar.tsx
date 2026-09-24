@@ -18,7 +18,6 @@ export function Sidebar() {
   const { state, goNew, go, goResults, signOut, cancelJob } = useApp()
   const allowance = quota(state.quota)
   const job = jobIndicator(state)
-  const isProcessing = job.visible && job.tone === 'active'
 
   return (
     <nav className="hidden w-[212px] flex-none flex-col border-r border-black/8 bg-white px-3.5 py-[18px] md:flex">
@@ -26,20 +25,9 @@ export function Sidebar() {
         <Logo size="sm" />
       </div>
 
-      <Button onClick={goNew} className="mb-2 h-[38px] text-[13px]">
+      <Button onClick={goNew} className="mb-4 h-[38px] text-[13px]">
         + New video
       </Button>
-
-      {isProcessing && (
-        <button
-          type="button"
-          onClick={() => cancelJob()}
-          disabled={state.pending === 'cancelJob'}
-          className="mb-4 flex h-[34px] w-full cursor-pointer items-center justify-center rounded-[8px] border border-red-200 bg-red-50 text-[12.5px] font-medium text-red-600 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {state.pending === 'cancelJob' ? 'Cancelling…' : 'Cancel job'}
-        </button>
-      )}
 
       <div className="flex flex-col gap-0.5">
         {/* Only rendered while there is a job worth reporting. */}
@@ -48,6 +36,8 @@ export function Sidebar() {
           variant="nav"
           current={state.screen === job.target}
           onOpen={() => go(job.target)}
+          onCancel={() => cancelJob()}
+          cancelling={state.pending === 'cancelJob'}
         />
 
         {NAV.map((item) => {
