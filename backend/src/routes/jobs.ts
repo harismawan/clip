@@ -206,17 +206,7 @@ jobsRoutes.post('/:id/cancel', async (c) => {
   if (!job) return c.json({ error: 'Job not found' }, 404)
   if (isTerminal(job.status)) return c.json({ ok: true, status: job.status })
 
-  // Mark cancelled first: the worker checks this between stages, so a job that
-  // is mid-ffmpeg stops at the next boundary even if the queue cancel misses.
-  await db
-    .update(jobs)
-    .set({ status: 'cancelled', stage: 'Cancelled', completedAt: new Date() })
-    .where(eq(jobs.id, id))
-
-  await boss.deleteJob(PROCESS_QUEUE, id).catch(() => {
-    // Already claimed by the worker; the status check above handles it.
-  })
-
+  await cancelJob(id)
   return c.json({ ok: true, status: 'cancelled' })
 })
 
@@ -319,13 +309,7 @@ jobsRoutes.delete('/:id', async (c) => {
 
   // Cancel first: deleting the clips of a job the worker is still writing to
   // would race it, and the worker only notices a cancel at a stage boundary.
-  if (!isTerminal(job.status)) {
-    await db
-      .update(jobs)
-      .set({ status: 'cancelled', stage: 'Cancelled', completedAt: new Date() })
-      .where(eq(jobs.id, id))
-    await boss.deleteJob(PROCESS_QUEUE, id).catch(() => {})
-  }
+  if (!isTerminal(job.status)) await cancelJob(id)
 
   await softDeleteJob(id)
   return c.json({ ok: true })
@@ -400,6 +384,25 @@ jobsRoutes.get('/', async (c) => c.json(await listProjects(c.get('user').id)))
  * shared between users, and `jobs.video_id` cascades, so deleting a video would
  * take somebody else's jobs with it.
  */
+/**
+ * Stop a job: flip the row, then pull it from the queue.
+ *
+ * The row first. The worker checks it between stages, so a job already claimed
+ * -- which the queue delete cannot reach -- still stops at the next boundary.
+ * One copy, shared by the cancel route, the delete route and
+ * backend/scripts/jobs.ts; there used to be one inlined in each route.
+ */
+export async function cancelJob(jobId: string) {
+  await db
+    .update(jobs)
+    .set({ status: 'cancelled', stage: 'Cancelled', completedAt: new Date() })
+    .where(eq(jobs.id, jobId))
+
+  await boss.deleteJob(PROCESS_QUEUE, jobId).catch(() => {
+    // Already claimed by a worker; the status write above is what stops it.
+  })
+}
+
 export async function softDeleteJob(jobId: string) {
   await deleteJobArtifacts(jobId)
   await db.update(jobs).set({ deletedAt: new Date() }).where(eq(jobs.id, jobId))
