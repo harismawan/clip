@@ -10,9 +10,10 @@
  * round id, so a moment from three replies ago is as creatable as one from the
  * last; the old single-list panel just never offered it.
  *
- * Two ways to create, because they answer different questions. Clicking a
- * moment is "that one, now". The checkboxes are for "these three of the six",
- * where one at a time means waiting for each render before judging the next.
+ * One way to create: tick moments, then press the reply's "Create N clips".
+ * The moment's text is plain text, not a control. Clicking a title used to
+ * create a clip on the spot, which made reading a moment and spending a render
+ * on it the same gesture -- easy to trigger while just tapping to read.
  */
 import { useEffect, useRef, useState } from 'react'
 import { Button } from './Button'
@@ -180,17 +181,7 @@ export function RecommendationPanel() {
                                 aria-label={`Select ${rec.title}`}
                                 className="mt-[3px] h-4 w-4 flex-none accent-ink"
                               />
-                              {/*
-                                The moment itself is the one-click path. A button,
-                                not a div with a handler: reachable by keyboard
-                                and announced, with the checkbox still separate.
-                              */}
-                              <button
-                                type="button"
-                                disabled={rec.taken || busy}
-                                onClick={() => void createFromRecommendations(round.id, [rec.idx])}
-                                className="min-w-0 flex-1 cursor-pointer border-0 bg-transparent p-0 text-left disabled:cursor-default"
-                              >
+                              <div className="min-w-0 flex-1">
                                 <span className="block text-[12px] leading-[1.35] font-semibold text-ink">
                                   {rec.title}
                                 </span>
@@ -203,7 +194,7 @@ export function RecommendationPanel() {
                                     {rec.snippet}
                                   </span>
                                 )}
-                              </button>
+                              </div>
                             </div>
                           </li>
                         )

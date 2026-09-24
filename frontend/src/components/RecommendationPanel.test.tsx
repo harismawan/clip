@@ -172,7 +172,22 @@ describe('picking moments', () => {
     const free = html({ recs: [round({ candidates: [rec(0)] })] })
     expect(taken).toContain('already clipped')
     // A delta, because the Send button is disabled in both (the draft is empty).
-    expect(count(taken, 'disabled=""') - count(free, 'disabled=""')).toBe(2)
+    // One: the checkbox is the only control a moment has.
+    expect(count(taken, 'disabled=""') - count(free, 'disabled=""')).toBe(1)
+  })
+
+  /**
+   * Clicking a title used to create a clip on the spot, so reading a moment
+   * and spending a render on it were the same gesture. The checkbox, then the
+   * reply's Create button, is now the only way.
+   */
+  test('a moment is not clickable, only its checkbox is', () => {
+    const s = html()
+    const buttons = s.match(/<button[^>]*>[\s\S]*?<\/button>/g) ?? []
+    expect(buttons.some((b) => b.includes('Moment 0'))).toBe(false)
+    expect(count(s, 'type="checkbox"')).toBe(2)
+    // With nothing ticked there is nothing to create yet.
+    expect(s).not.toContain('Create ')
   })
 
   test('no create button until something is ticked', () => {
