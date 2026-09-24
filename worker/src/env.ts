@@ -27,6 +27,12 @@ const schema = z.object({
   WHISPER_MODEL: z.string().default('base'),
   WHISPER_LANGUAGE: z.string().optional(),
   WHISPER_THREADS: z.coerce.number().int().min(1).default(4),
+  /** cpu | cuda. cuda needs the image built with GPU=1 (see worker/Dockerfile). */
+  WHISPER_DEVICE: z.enum(['cpu', 'cuda']).default('cpu'),
+  /** Blank = int8 on cpu, float16 on cuda. */
+  WHISPER_COMPUTE_TYPE: z.string().optional(),
+  /** libx264 | nvenc. Read by ffmpeg.ts and autocrop.py straight from process.env. */
+  VIDEO_ENCODER: z.enum(['libx264', 'nvenc']).default('libx264'),
   MIN_FREE_DISK_GB: z.coerce.number().default(5),
 
   /**

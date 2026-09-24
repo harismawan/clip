@@ -25,6 +25,7 @@ import { processJob, recutClip, backfillAssets, buildSourceProxy } from './pipel
 import { sweepSourceProxies, sweepSources } from './retention.ts'
 import { reclaimSourceLeases, sourcesDir } from './sourceCache.ts'
 import { reconcileOnBoot } from './reconcile.ts'
+import { assertEncoderAvailable } from './ffmpeg.ts'
 
 const boss = makeBoss(env.DATABASE_URL)
 
@@ -40,6 +41,7 @@ await mkdir(sourcesDir(), { recursive: true })
 // assertWhisperAvailable() already exists to prevent.
 try {
   await assertStorageReady()
+  await assertEncoderAvailable()
 } catch (e) {
   console.error(`[worker] ${(e as Error).message}`)
   process.exit(1)

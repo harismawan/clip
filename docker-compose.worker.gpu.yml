@@ -1,0 +1,35 @@
+# GPU worker (NVIDIA, podman + CDI). Same worker, built with GPU=1 and the
+# cards mapped in. Pair with WHISPER_DEVICE=cuda in .env.
+#
+#   podman compose -f docker-compose.worker.gpu.yml up -d --build
+#
+# Run exactly ONE worker against a database: reconcileOnBoot marks every
+# in-flight job failed, which is only true when nothing else is running.
+
+name: clip-worker-gpu
+
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+      args:
+        GPU: '1'
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      WORK_DIR: /app/worker/output/.work
+    volumes:
+      - worker-work:/app/worker/output/.work
+      # Whisper weights (large-v3-turbo is 1.6GB); kept across rebuilds.
+      - worker-hf:/root/.cache/huggingface
+    devices:
+      - nvidia.com/gpu=all
+    security_opt:
+      - label=disable
+    network_mode: host
+
+volumes:
+  worker-work:
+  worker-hf:
