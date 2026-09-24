@@ -79,7 +79,7 @@ export function PlanScreen() {
           </p>
           <div className="flex gap-2">
             <div className="flex h-[38px] flex-1 items-center rounded-full border-[1.5px] border-[rgba(23,20,18,.45)] px-3 text-[12.5px] text-[#9A968F]">
-              snipline.app/i/a7f3k
+              clip2.mhamzah.id/i/a7f3k
             </div>
             <Button
               onClick={() => say('Invite link copied.')}

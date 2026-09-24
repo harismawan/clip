@@ -19,7 +19,7 @@ export function Logo({ size = 'md' }: { size?: 'sm' | 'md' }) {
       <span
         className={cn('font-semibold text-ink', sm ? 'text-[13.5px]' : 'text-[14.5px]')}
       >
-        Snipline
+        clip2
       </span>
     </div>
   )
