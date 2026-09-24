@@ -1,5 +1,6 @@
 import { Button } from '../components/Button'
 import { Chip } from '../components/Chip'
+import { ShareClip } from '../components/ShareClip'
 import { MomentsToggle, RecommendationPanel } from '../components/RecommendationPanel'
 import { FEATURES } from '../config'
 import { RATIOS } from '../data/fixtures'
@@ -230,6 +231,8 @@ export function ResultsScreen() {
                           Edit
                         </Chip>
                       )}
+                      {/* Absent where the browser cannot share a file; see ShareClip. */}
+                      <ShareClip clip={clip} ratio={state.filter} />
                       <Chip
                         onClick={() => redoClip(clip.id)}
                         disabled={busy}
