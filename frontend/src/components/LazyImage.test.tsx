@@ -37,6 +37,19 @@ describe('LazyImage, before it loads', () => {
     expect(html).not.toContain('hatch-sand')
   })
 
+  /**
+   * The clip card lays the thumbnail behind its hook badge and checkbox with
+   * `absolute inset-0`. A `relative` of the component's own beat it -- cn() does
+   * not resolve conflicts -- and the image took up room in the card instead,
+   * shoving the badge and checkbox beneath the picture. In production.
+   */
+  test("a caller's positioning is the only positioning", () => {
+    const card = renderToStaticMarkup(<LazyImage src="/t.jpg" className="absolute inset-0 z-0" />)
+    const wrapper = card.match(/<span class="([^"]*)"/)![1]!.split(' ')
+    expect(wrapper).toContain('absolute')
+    expect(wrapper).not.toContain('relative')
+  })
+
   test('passes image attributes through, e.g. the avatar referrer policy', () => {
     const avatar = renderToStaticMarkup(<LazyImage src="/a.jpg" referrerPolicy="no-referrer" />)
     expect(avatar).toContain('referrerPolicy="no-referrer"')
