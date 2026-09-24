@@ -15,6 +15,7 @@ services:
     environment:
       # Override relative WORK_DIR to an absolute scratch path in container
       WORK_DIR: /app/worker/output/.work
+      WORKER_HOST_ID: ${WORKER_HOST_ID:-worker-docker}
     volumes:
       # Optional persistence for scratch / downloads / cache
       - worker-work:/app/worker/output/.work
