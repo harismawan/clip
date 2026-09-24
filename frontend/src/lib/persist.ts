@@ -20,6 +20,8 @@ export interface Persisted {
   subs: boolean
   emailMe: boolean
   screen: Screen
+  /** Moments sidebar open or collapsed. Optional: older blobs predate it. */
+  recsOpen?: boolean
 }
 
 /**
@@ -37,6 +39,7 @@ export function loadPersisted(): Partial<Persisted> {
     // A job in flight now survives a reload -- the worker kept running and the
     // app re-subscribes to its progress, so 'processing' is restorable.
     if (typeof slice.jobId !== 'string') delete slice.jobId
+    if (typeof slice.recsOpen !== 'boolean') delete slice.recsOpen
     return slice
   } catch {
     return {}
