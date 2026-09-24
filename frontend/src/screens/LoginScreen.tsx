@@ -44,7 +44,7 @@ function GoogleMark() {
 }
 
 export function LoginScreen() {
-  const { state, signIn } = useApp()
+  const { state, signIn, goLanding } = useApp()
 
   // The callback redirects here with ?error=<code> rather than rendering JSON,
   // because the browser arrives by top-level navigation.
@@ -55,7 +55,19 @@ export function LoginScreen() {
     <div className="grid min-h-0 flex-1 grid-cols-1 bg-white lg:grid-cols-[1.05fr_.95fr]">
       <div className="flex flex-col overflow-auto px-6 py-10 sm:px-[52px] sm:py-12">
         <div className="mb-auto">
-          <Logo />
+          {/* Back to the front page. A real link, switched in place on a plain click. */}
+          <a
+            href="/"
+            aria-label="clip2 home"
+            onClick={(e) => {
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+              e.preventDefault()
+              goLanding()
+            }}
+            className="inline-block"
+          >
+            <Logo />
+          </a>
         </div>
 
         <h1 className="mt-6 mb-2.5 max-w-[420px] font-display text-[38px] leading-[1.1] font-bold tracking-[-0.025em] text-ink">

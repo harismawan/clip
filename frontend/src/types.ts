@@ -4,6 +4,9 @@ export type Screen =
    * flashes the login screen for a moment before landing on your projects.
    */
   | 'booting'
+  /** The public front page, at /. Visitors only: signed-in users get the app there. */
+  | 'landing'
+  /** Sign-in, at /login. */
   | 'login'
   | 'new'
   | 'setup'

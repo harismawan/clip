@@ -60,17 +60,19 @@ authRoutes.get('/google/callback', async (c) => {
   deleteCookie(c, STATE_COOKIE, opts)
   deleteCookie(c, VERIFIER_COOKIE, opts)
 
+  // Failures go to /login, where the sign-in form reads ?error= and says what
+  // went wrong. Success goes to /, which is the app for a signed-in user.
   // The user declined at Google's consent screen, or Google refused.
-  if (c.req.query('error')) return c.redirect('/?error=denied', 302)
+  if (c.req.query('error')) return c.redirect('/login?error=denied', 302)
 
   // THE CSRF CHECK. safeCompare treats empty as no value, so a callback with
   // neither cookie nor parameter cannot match itself into a session.
   if (!safeCompare(c.req.query('state') ?? '', state)) {
-    return c.redirect('/?error=state', 302)
+    return c.redirect('/login?error=state', 302)
   }
 
   const code = c.req.query('code') ?? ''
-  if (!code) return c.redirect('/?error=code', 302)
+  if (!code) return c.redirect('/login?error=code', 302)
 
   try {
     const claims = parseIdToken(await exchangeCode(code, verifier), env.GOOGLE_CLIENT_ID)
@@ -80,7 +82,7 @@ authRoutes.get('/google/callback', async (c) => {
     return c.redirect('/', 302)
   } catch (e) {
     console.error('[auth] callback failed:', (e as Error).message)
-    return c.redirect('/?error=exchange', 302)
+    return c.redirect('/login?error=exchange', 302)
   }
 })
 
