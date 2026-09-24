@@ -33,7 +33,7 @@ set -Eeuo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-SITE="clip2.mhamzah.id"
+SITE="clip2.id"
 WEB_DIST_TARGET="/var/www/html/clip2/dist"
 NGINX_AVAILABLE="/etc/nginx/sites-available/$SITE"
 NGINX_REPO_CONF="$REPO_ROOT/deploy/nginx/$SITE"
