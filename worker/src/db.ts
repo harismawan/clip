@@ -4,9 +4,12 @@ import { env } from './env.ts'
 import * as schema from '../../shared/schema.ts'
 import { makeStorage, envNames, type BackendRow } from '../../shared/storage.ts'
 import { storageBackends } from '../../shared/schema.ts'
+import { workerAppName } from '../../shared/queue.ts'
 
 export const pool = new pg.Pool({
   connectionString: env.DATABASE_URL,
+  // How scripts/workers.sh counts workers. See workerAppName.
+  application_name: workerAppName(env.WORKER_HOST_ID),
   // Concurrency 1 means one in-flight job; a small pool is plenty and leaves
   // connections for the API.
   max: 5,

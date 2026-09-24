@@ -3,6 +3,7 @@ import { fmtDuration, estimateEta, slugify, buildMeta, parseUploadDate, fmtBytes
 import { stageProgress, isTerminal } from './types.ts'
 import { signMedia, verifyMedia, mediaUrl } from './mediaToken.ts'
 import { encodeProgress, decodeProgress } from './progress.ts'
+import { workerAppName, WORKER_APP_PREFIX } from './queue.ts'
 
 describe('fmtDuration', () => {
   test('matches the prototype fixtures', () => {
@@ -204,5 +205,21 @@ describe('progress encoding', () => {
 
   test('returns null on malformed input instead of throwing', () => {
     expect(decodeProgress('not json')).toBeNull()
+  })
+})
+
+/**
+ * scripts/workers.sh parses these names back apart, splitting on ':' and taking
+ * the last field as the pid. So the pid must survive Postgres's 63-byte cap.
+ */
+describe('workerAppName', () => {
+  test('carries prefix, host and pid', () => {
+    expect(workerAppName('box-1', 4242)).toBe(`${WORKER_APP_PREFIX}:box-1:4242`)
+  })
+
+  test('truncates the host, never the pid, to fit application_name', () => {
+    const name = workerAppName('h'.repeat(100), 4242)
+    expect(name.length).toBe(63)
+    expect(name.endsWith(':4242')).toBe(true)
   })
 })
