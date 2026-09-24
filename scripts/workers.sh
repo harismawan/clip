@@ -31,10 +31,13 @@ PREFIX=clip-worker # WORKER_APP_PREFIX in shared/queue.ts
 
 # psql is not installed on this host, so go through the container, as
 # queue-watch.sh does.
-if command -v psql >/dev/null 2>&1 && [ "${USE_LOCAL_PSQL:-0}" = "1" ]; then
-  PSQL=(psql "${DATABASE_URL:?DATABASE_URL not set}")
-else
+if [ -n "${DATABASE_URL:-}" ] && command -v psql >/dev/null 2>&1; then
+  PSQL=(psql "$DATABASE_URL")
+elif docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$CONTAINER"; then
   PSQL=(docker exec -i "$CONTAINER" psql -U "${POSTGRES_USER:-clip}" -d "${POSTGRES_DB:-clip}")
+else
+  # Fallback to local psql if DATABASE_URL is set, or fail gracefully
+  PSQL=(psql "${DATABASE_URL:?Cannot reach Postgres: container $CONTAINER not running and DATABASE_URL not set}")
 fi
 
 q() { "${PSQL[@]}" -XAtq -c "$1"; }
@@ -62,7 +65,7 @@ unidentified_count() {
   q "SELECT count(*) FROM pg_stat_activity
      WHERE datname = current_database()
        AND application_name IN ('pgboss', '')
-       AND query ILIKE '%WITH next as%';"
+       AND query ILIKE '%WITH next as%';" | tr -d '[:space:]' || echo 0
 }
 
 # SSH tunnels into the database port. Needs root to attribute sockets to sshd,
