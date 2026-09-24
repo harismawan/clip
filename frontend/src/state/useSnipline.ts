@@ -117,9 +117,10 @@ export interface SnipState {
    * Suggested moments for the open project, oldest round first, and the
    * conversation that shaped them.
    *
-   * Only the NEWEST round is live -- it is what the panel lists and what
-   * recsPicked indexes into. Older rounds survive as chat history; asking again
-   * appends rather than replaces, so what the user typed stays on screen.
+   * Rendered as a conversation, and every round stays usable: a moment from
+   * three replies ago can still be turned into a clip. POST /jobs/:id/clips
+   * takes a round id, so nothing on the server favours the newest one. Asking
+   * again appends a round rather than replacing, so the thread keeps its past.
    *
    * Not persisted. The server owns every round, and a list restored from
    * localStorage would be a snapshot of somebody's clips from a week ago with
@@ -135,9 +136,15 @@ export interface SnipState {
    */
   recsAsking: boolean
   recsError: string | null
-  /** Indices into the live round. Cleared whenever a new round arrives. */
-  recsPicked: number[]
+  /**
+   * Ticked moments, all from ONE round: POST /jobs/:id/clips takes a single
+   * round id, and each reply has its own "Create N clips" button. Ticking in a
+   * different reply starts a fresh selection there.
+   */
+  recsPicked: { roundId: string; indices: number[] } | null
   recsCreating: boolean
+  /** Is the moments sidebar showing? A per-viewer preference; persisted. */
+  recsOpen: boolean
 
   toast: string | null
   pwCurrent: string
@@ -179,8 +186,12 @@ const initialState: SnipState = {
   recsLoading: false,
   recsAsking: false,
   recsError: null,
-  recsPicked: [],
+  recsPicked: null,
   recsCreating: false,
+  // Open beside the clips on a wide screen, closed on a phone -- where the panel
+  // covers the clips, and landing on it would hide what the job just made. A
+  // saved choice overrides this either way; see Persisted.recsOpen.
+  recsOpen: typeof window !== 'undefined' && !!window.matchMedia?.('(min-width: 768px)').matches,
   toast: null,
   pwCurrent: '',
   pwNext: '',
@@ -381,6 +392,7 @@ export function useSnipline() {
       subs: state.subs,
       emailMe: state.emailMe,
       screen: state.screen,
+      recsOpen: state.recsOpen,
     })
   }, [
     state.jobId,
@@ -390,6 +402,7 @@ export function useSnipline() {
     state.subs,
     state.emailMe,
     state.screen,
+    state.recsOpen,
   ])
 
   const say = useCallback((toast: string) => {
@@ -970,7 +983,7 @@ export function useSnipline() {
     try {
       const { rounds } = await api.recommendations(jobId)
       setState((s) =>
-        s.jobId === jobId ? { ...s, recs: rounds, recsPicked: [], recsLoading: false } : s,
+        s.jobId === jobId ? { ...s, recs: rounds, recsLoading: false } : s,
       )
     } catch {
       // No toast. Nobody asked for this list; failing to fetch it is not an
@@ -991,7 +1004,7 @@ export function useSnipline() {
         const round = await api.recommend(jobId, text)
         setState((s) =>
           s.jobId === jobId
-            ? { ...s, recs: [...s.recs, round], recsPicked: [], recsAsking: false }
+            ? { ...s, recs: [...s.recs, round], recsAsking: false }
             : s,
         )
       } catch (e) {
@@ -1008,13 +1021,18 @@ export function useSnipline() {
   )
 
   const toggleRecommendation = useCallback(
-    (idx: number) =>
-      setState((s) => ({
-        ...s,
-        recsPicked: s.recsPicked.includes(idx)
-          ? s.recsPicked.filter((i) => i !== idx)
-          : [...s.recsPicked, idx],
-      })),
+    (roundId: string, idx: number) =>
+      setState((s) => {
+        // A tick in another reply starts over there: one create call, one round.
+        const cur = s.recsPicked?.roundId === roundId ? s.recsPicked.indices : []
+        const indices = cur.includes(idx) ? cur.filter((i) => i !== idx) : [...cur, idx]
+        return { ...s, recsPicked: indices.length ? { roundId, indices } : null }
+      }),
+    [],
+  )
+
+  const toggleRecsOpen = useCallback(
+    () => setState((s) => ({ ...s, recsOpen: !s.recsOpen })),
     [],
   )
 
@@ -1026,16 +1044,15 @@ export function useSnipline() {
    * rather than at the end of the last render.
    */
   const createFromRecommendations = useCallback(
-    async (indices: number[]) => {
+    async (roundId: string, indices: number[]) => {
       const jobId = state.jobId
-      const live = state.recs[state.recs.length - 1]
-      if (!jobId || !live || indices.length === 0) return
+      if (!jobId || indices.length === 0) return
 
       setState((s) => ({ ...s, recsCreating: true, recsError: null }))
 
       let created: Clip[]
       try {
-        created = await api.createClips(jobId, live.id, indices)
+        created = await api.createClips(jobId, roundId, indices)
       } catch (e) {
         const msg = e instanceof ApiError ? e.message : 'Could not reach the server.'
         setState((s) => ({ ...s, recsCreating: false, recsError: msg }))
@@ -1043,19 +1060,22 @@ export function useSnipline() {
       }
 
       say(created.length === 1 ? 'Creating that clip…' : `Creating ${created.length} clips…`)
-      await refreshJob(jobId)
-      setState((s) => ({ ...s, recsCreating: false, recsPicked: [] }))
+      /**
+       * Re-read the rounds NOW, not after the renders. `taken` is computed by
+       * the server against the clips that exist, and the rows exist from the
+       * moment the create returns. Waiting for the render left a moment that
+       * was already a clip on offer for minutes -- and clickable a second time.
+       */
+      await Promise.all([refreshJob(jobId), loadRecommendations()])
+      setState((s) => ({ ...s, recsCreating: false, recsPicked: null }))
 
       const settled = await Promise.all(created.map((c) => pollClip(c.id)))
-      // Re-reading the rounds is what moves `taken` on: it is computed by the
-      // server against the clips that now exist.
-      await loadRecommendations()
 
       const ok = settled.filter((c) => c?.status === 'ready').length
       if (ok === settled.length) say(ok === 1 ? 'Clip ready.' : `${ok} clips ready.`)
       else say('Some of those are still rendering; refresh to check.')
     },
-    [state.jobId, state.recs, say, refreshJob, pollClip, loadRecommendations],
+    [state.jobId, say, refreshJob, pollClip, loadRecommendations],
   )
 
   // ---- player -------------------------------------------------------------
@@ -1327,6 +1347,7 @@ export function useSnipline() {
     loadRecommendations,
     askRecommendations,
     toggleRecommendation,
+    toggleRecsOpen,
     createFromRecommendations,
     cycleLength,
     toggleFormat,
